@@ -13,6 +13,34 @@ import (
 	"time"
 )
 
+// Storage holds storage-related configuration.
+type Storage struct {
+	urlFilePath    string
+	logFilePath    string
+	syncInterval   time.Duration
+	flushOnWrite   bool
+}
+
+// URLFilePath sets the URL file path for storage.
+func (s *Storage) URLFilePath(path string) {
+	s.urlFilePath = path
+}
+
+// LogFilePath sets the log file path for storage.
+func (s *Storage) LogFilePath(path string) {
+	s.logFilePath = path
+}
+
+// SyncInterval sets the sync interval for storage.
+func (s *Storage) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+// FlushOnWrite sets whether to flush on write.
+func (s *Storage) FlushOnWrite(b bool) {
+	s.flushOnWrite = b
+}
+
 // Config holds all application configuration.
 type Config struct {
 	mu *sync.RWMutex
@@ -31,6 +59,59 @@ type Config struct {
 	Export ExportConfig `json:"export"`
 	// Rate limiting configuration
 	RateLimit RateLimitConfig `json:"rate_limit"`
+	// Storage configuration
+	Storage Storage `json:"storage"`
+}
+
+// Default returns a Config with sensible defaults.
+func Default() *Config {
+	return &Config{
+		mu: &sync.RWMutex{},
+		Server: ServerConfig{
+			Host:            "0.0.0.0",
+			Port:            8080,
+			ReadTimeout:     30,
+			WriteTimeout:    30,
+			IdleTimeout:     120,
+			ShutdownTimeout: 30,
+		},
+		Store: StoreConfig{
+			MaxEventsPerUser:   100000,
+			MaxSessionsPerUser: 1000,
+			MaxPathLength:      100,
+			FlushInterval:      5,
+			EvictionInterval:   3600,
+		},
+		Session: SessionConfig{
+			TimeoutMinutes:      30,
+			MaxIdleMinutes:      60,
+			MinEventsForSession: 1,
+		},
+		Analytics: AnalyticsConfig{
+			DefaultTimeRangeHours: 24,
+			MaxTimeRangeHours:     720,
+			HotPathLimit:          20,
+			ConversionCacheSeconds: 300,
+		},
+		Logging: LoggingConfig{
+			Level:   "INFO",
+			Format:  "text",
+			Output:  "stdout",
+			File:    "",
+			MaxSize: 100,
+		},
+		Export: ExportConfig{
+			MaxRecords:    100000,
+			TimeoutSecond: 60,
+			Compress:      false,
+		},
+		RateLimit: RateLimitConfig{
+			Enabled:   false,
+			MaxPerSec: 100,
+			MaxBurst:  200,
+			WindowSec: 60,
+		},
+	}
 }
 
 // ServerConfig holds server-specific settings.

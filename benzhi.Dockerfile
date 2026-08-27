@@ -1,5 +1,5 @@
-# Use official Go image for build stage
-FROM golang:1.26-alpine AS builder
+# Use official Go image for both build and runtime (supports in-container compilation)
+FROM golang:1.26-alpine
 
 # Set working directory
 WORKDIR /app
@@ -15,33 +15,6 @@ COPY . .
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -o ubaas-server ./cmd/server/
-
-# Create minimal runtime image
-FROM alpine:3.19
-
-# Install required runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
-
-# Create app directory
-WORKDIR /app
-
-# Copy the binary from builder
-COPY --from=builder /app/ubaas-server .
-
-# Copy web static files
-COPY web/ ./web/
-
-# Copy configuration template if needed
-# COPY config/config.yaml ./config/
-
-# Create non-root user for security
-RUN adduser -D -u 1000 appuser
-
-# Set permissions
-RUN chown -R appuser:appuser /app
-
-# Switch to non-root user
-USER appuser
 
 # Expose the application port
 EXPOSE 8080
@@ -65,4 +38,3 @@ ENTRYPOINT ["./ubaas-server"]
 LABEL org.opencontainers.image.title="UBAAS Server"
 LABEL org.opencontainers.image.description="User Behavior Analysis as a Service"
 LABEL org.opencontainers.image.version="1.0.0"
-LABEL org.opencontainers.image.source="https://github.com/ubaas/ubaas"

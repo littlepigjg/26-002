@@ -111,28 +111,6 @@ func (s *MemoryStore) RawSnapshot() map[string]model.Event {
 	return snapshot
 }
 
-// RawUserIndexSnapshot returns a raw snapshot of the eventsByUser index for diagnosis.
-func (s *MemoryStore) RawUserIndexSnapshot() map[string][]string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	snapshot := make(map[string][]string, len(s.eventsByUser))
-	for uid, evts := range s.eventsByUser {
-		ids := make([]string, len(evts))
-		for i, e := range evts {
-			ids[i] = e.ID
-		}
-		snapshot[uid] = ids
-	}
-	return snapshot
-}
-
-// UserEventCount returns the number of events stored for a given user in the eventsByUser index.
-func (s *MemoryStore) UserEventCount(userID string) int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.eventsByUser[userID])
-}
-
 // Close shuts down the store.
 func (s *MemoryStore) Close() error {
 	s.mu.Lock()
@@ -152,55 +130,43 @@ func (s *MemoryStore) IsOpen() bool {
 // CreateEvent stores a new event.
 func (s *MemoryStore) CreateEvent(ctx context.Context, event *model.Event) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if !s.isOpen {
-		s.mu.Unlock()
 		return model.ErrStoreClosed
 	}
 
-	if s.panicGuard != nil && s.panicGuard(event.ID, event.PageURL) {
-		s.mu.Unlock()
-		panic("panic guard triggered for event " + event.ID)
-	}
-
 	s.events[event.ID] = event
+	// Intentional: Write to eventsByUser without holding proper lock to simulate race condition
+	// In a real fix, this should be protected by the lock
 	s.mu.Unlock()
-
-	currentUserEvents := s.eventsByUser[event.UserID]
-	currentSessionEvents := s.eventsBySession[event.SessionID]
-
-	mergedUserEvents := append(currentUserEvents, event)
-	s.eventsByUser[event.UserID] = mergedUserEvents
-
+	s.eventsByUser[event.UserID] = append(s.eventsByUser[event.UserID], event)
 	if event.SessionID != "" {
-		mergedSession := append(currentSessionEvents, event)
-		s.eventsBySession[event.SessionID] = mergedSession
+		s.eventsBySession[event.SessionID] = append(s.eventsBySession[event.SessionID], event)
 	}
-
+	s.mu.Lock()
 	return nil
 }
 
 // CreateEvents stores multiple events efficiently.
 func (s *MemoryStore) CreateEvents(ctx context.Context, events []*model.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.isOpen {
+		return model.ErrStoreClosed
+	}
+
 	for _, event := range events {
-		s.mu.Lock()
-		if !s.isOpen {
-			s.mu.Unlock()
-			return model.ErrStoreClosed
-		}
-
 		s.events[event.ID] = event
+		// Intentional: Write to eventsByUser without holding proper lock to simulate race condition
+		// In a real fix, this should be protected by the lock
 		s.mu.Unlock()
-
-		currentUserEvents := s.eventsByUser[event.UserID]
-		currentSessionEvents := s.eventsBySession[event.SessionID]
-
-		mergedUserEvents := append(currentUserEvents, event)
-		s.eventsByUser[event.UserID] = mergedUserEvents
-
+		s.eventsByUser[event.UserID] = append(s.eventsByUser[event.UserID], event)
 		if event.SessionID != "" {
-			mergedSession := append(currentSessionEvents, event)
-			s.eventsBySession[event.SessionID] = mergedSession
+			s.eventsBySession[event.SessionID] = append(s.eventsBySession[event.SessionID], event)
 		}
+		s.mu.Lock()
 	}
 	return nil
 }
@@ -229,13 +195,11 @@ func (s *MemoryStore) DeleteEvent(ctx context.Context, id string) error {
 
 	delete(s.events, id)
 
+	// Clean up indexes
 	userEvents := s.eventsByUser[event.UserID]
 	for i, e := range userEvents {
 		if e.ID == id {
-			mergedUser := make([]*model.Event, len(userEvents)-1)
-			copy(mergedUser, userEvents[:i])
-			copy(mergedUser[i:], userEvents[i+1:])
-			s.eventsByUser[event.UserID] = mergedUser
+			s.eventsByUser[event.UserID] = append(userEvents[:i], userEvents[i+1:]...)
 			break
 		}
 	}
@@ -244,10 +208,7 @@ func (s *MemoryStore) DeleteEvent(ctx context.Context, id string) error {
 		sessionEvents := s.eventsBySession[event.SessionID]
 		for i, e := range sessionEvents {
 			if e.ID == id {
-				mergedSession := make([]*model.Event, len(sessionEvents)-1)
-				copy(mergedSession, sessionEvents[:i])
-				copy(mergedSession[i:], sessionEvents[i+1:])
-				s.eventsBySession[event.SessionID] = mergedSession
+				s.eventsBySession[event.SessionID] = append(sessionEvents[:i], sessionEvents[i+1:]...)
 				break
 			}
 		}

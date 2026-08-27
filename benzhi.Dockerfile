@@ -23,22 +23,19 @@ FROM alpine:3.19
 RUN apk add --no-cache ca-certificates tzdata
 
 # Create app directory
-WORKDIR /app
+WORKDIR /work
 
 # Copy the binary from builder
-COPY --from=builder /app/ubaas-server .
+COPY --from=builder /app/ubaas-server /usr/local/bin/ubaas-server
 
 # Copy web static files
-COPY web/ ./web/
-
-# Copy configuration template if needed
-# COPY config/config.yaml ./config/
+COPY --from=builder /app/web/ ./web/
 
 # Create non-root user for security
 RUN adduser -D -u 1000 appuser
 
 # Set permissions
-RUN chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /work
 
 # Switch to non-root user
 USER appuser
@@ -59,7 +56,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD wget -qO- http://localhost:8080/health || exit 1
 
 # Default command
-ENTRYPOINT ["./ubaas-server"]
+ENTRYPOINT ["/usr/local/bin/ubaas-server"]
 
 # Metadata
 LABEL org.opencontainers.image.title="UBAAS Server"

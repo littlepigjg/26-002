@@ -127,18 +127,42 @@ type EventQuery struct {
 	SortOrder  string    `json:"sort_order"`
 }
 
+const (
+	FullScanPageSize = -1
+	DefaultPageSize  = 50
+	MaxPageSize      = 1000
+)
+
 // Validate checks if query parameters are valid.
 func (q *EventQuery) Validate() error {
 	if q.Page < 1 {
 		q.Page = 1
 	}
-	if q.PageSize <= 0 || q.PageSize > 1000 {
-		q.PageSize = 50
+	if q.PageSize == 0 {
+		q.PageSize = FullScanPageSize
+	} else if q.PageSize < 0 || q.PageSize > MaxPageSize {
+		q.PageSize = DefaultPageSize
 	}
 	if q.StartDate.After(q.EndDate) && !q.EndDate.IsZero() {
 		return ErrInvalidTimeRange
 	}
 	return nil
+}
+
+// IsFullScan returns true if this query requests an unrestricted result set.
+func (q *EventQuery) IsFullScan() bool {
+	return q.PageSize == FullScanPageSize
+}
+
+// EffectivePageSize returns the page size to use for this query.
+func (q *EventQuery) EffectivePageSize() int {
+	if q.IsFullScan() {
+		return MaxPageSize * 100
+	}
+	if q.PageSize <= 0 {
+		return DefaultPageSize
+	}
+	return q.PageSize
 }
 
 // EventStats contains aggregated event statistics.

@@ -52,6 +52,9 @@ type Store interface {
 	IsOpen() bool
 }
 
+// QueryGuardFn is a function that can intercept queries to prevent expensive operations.
+type QueryGuardFn func(pageSize int, userID string) bool
+
 // MemoryStore is an in-memory implementation of the Store interface.
 type MemoryStore struct {
 	mu sync.RWMutex
@@ -67,9 +70,10 @@ type MemoryStore struct {
 	sessionsByUser  map[string][]*model.Session
 	pathsByUser     map[string][]*model.PathSequence
 
-	isOpen    bool
-	logger    *logger.Logger
-	createdAt time.Time
+	queryGuard QueryGuardFn
+	isOpen     bool
+	logger     *logger.Logger
+	createdAt  time.Time
 }
 
 // NewMemoryStore creates a new in-memory store.
@@ -87,6 +91,14 @@ func NewMemoryStore(log *logger.Logger) *MemoryStore {
 		logger:          log,
 		createdAt:       time.Now(),
 	}
+}
+
+// SetQueryGuard sets a guard function that is called before executing queries.
+// The guard receives the requested pageSize and userID; return false to block the query.
+func (s *MemoryStore) SetQueryGuard(guard QueryGuardFn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queryGuard = guard
 }
 
 // Close shuts down the store.
@@ -196,6 +208,16 @@ func (s *MemoryStore) ListEvents(ctx context.Context, query model.EventQuery) ([
 		return nil, 0, model.ErrStoreClosed
 	}
 
+	pageSize := query.EffectivePageSize()
+
+	if s.queryGuard != nil {
+		if !s.queryGuard(pageSize, query.UserID) {
+			return nil, 0, model.ErrTooManyRecords
+		}
+	}
+
+	isFullScan := query.IsFullScan()
+
 	var results []*model.Event
 	for _, event := range s.events {
 		if query.UserID != "" && event.UserID != query.UserID {
@@ -236,12 +258,15 @@ func (s *MemoryStore) ListEvents(ctx context.Context, query model.EventQuery) ([
 
 	total := len(results)
 
-	// Apply pagination
-	start := (query.Page - 1) * query.PageSize
+	if isFullScan {
+		return results, total, nil
+	}
+
+	start := (query.Page - 1) * pageSize
 	if start >= total {
 		return []*model.Event{}, total, nil
 	}
-	end := start + query.PageSize
+	end := start + pageSize
 	if end > total {
 		end = total
 	}
@@ -293,16 +318,13 @@ func (s *MemoryStore) RecentEvents(ctx context.Context, userID string, limit int
 		return []*model.Event{}, nil
 	}
 
-	// Sort by timestamp descending
 	events := make([]*model.Event, len(userEvents))
 	copy(events, userEvents)
 
-	// Simple selection sort for the most recent events
 	if limit > len(events) {
 		limit = len(events)
 	}
 
-	// Find the most recent events by scanning
 	recent := make([]*model.Event, 0, limit)
 	for _, e := range events {
 		if len(recent) < limit {

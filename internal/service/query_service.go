@@ -46,14 +46,12 @@ type QueryResult struct {
 
 // ExecuteQuery executes a complex analytical query.
 func (qs *QueryService) ExecuteQuery(ctx context.Context, req QueryRequest) (*QueryResult, error) {
-	if req.Limit <= 0 {
-		req.Limit = 100
-	}
-	if req.Limit > 10000 {
+	if req.Limit == 0 {
+		req.Limit = model.FullScanPageSize
+	} else if req.Limit < 0 || req.Limit > 10000 {
 		req.Limit = 10000
 	}
 
-	// Resolve time range
 	var startDate, endDate time.Time
 	if req.TimeRange != "" {
 		tw, err := timeutil.ResolveTimeRange(req.TimeRange)
@@ -84,9 +82,8 @@ func (qs *QueryService) ExecuteQuery(ctx context.Context, req QueryRequest) (*Qu
 		return nil, err
 	}
 
-	hasMore := (req.Offset+req.Limit) < total
+	hasMore := (req.Offset + len(events)) < total
 
-	// Apply in-memory filters
 	if len(req.Filters) > 0 {
 		var filtered []*model.Event
 		for _, e := range events {

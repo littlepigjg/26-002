@@ -106,8 +106,10 @@ func (ss *SessionService) getLatestActiveSession(ctx context.Context, userID str
 
 // processExistingEvent applies an event to an existing session.
 func (ss *SessionService) processExistingEvent(session *model.Session, event *model.Event, timeout time.Duration) error {
-	// Validate the session can still accept events
-	if session.State == model.SessionClosed {
+	// Validate the session can still accept events. A session in a
+	// terminal state (expired or closed) must not receive new events,
+	// otherwise those events are misattributed to a finished session.
+	if session.State == model.SessionClosed || session.State == model.SessionExpired {
 		return model.ErrInvalidState
 	}
 

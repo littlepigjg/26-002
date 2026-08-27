@@ -16,8 +16,11 @@ func (s *MemoryStore) CreateSession(ctx context.Context, session *model.Session)
 		return model.ErrStoreClosed
 	}
 
-	s.sessions[session.ID] = session
-	s.sessionsByUser[session.UserID] = append(s.sessionsByUser[session.UserID], session)
+	// Store a private copy so callers cannot mutate the stored session
+	// through the pointer they passed in.
+	stored := cloneSession(session)
+	s.sessions[stored.ID] = stored
+	s.sessionsByUser[stored.UserID] = append(s.sessionsByUser[stored.UserID], stored)
 	return nil
 }
 
@@ -30,7 +33,11 @@ func (s *MemoryStore) GetSession(ctx context.Context, id string) (*model.Session
 	if !ok {
 		return nil, model.ErrSessionNotFound
 	}
-	return session, nil
+	// Return a snapshot copy so callers can mutate the returned session
+	// without disturbing the stored value. This is what allows UpdateSession
+	// to reliably compare the incoming (mutated) session against the stored
+	// (un-mutated) session.
+	return cloneSession(session), nil
 }
 
 // GetUserSessions retrieves all sessions for a user.
@@ -46,10 +53,26 @@ func (s *MemoryStore) GetUserSessions(ctx context.Context, userID string, includ
 	var results []*model.Session
 	for _, session := range userSessions {
 		if includeExpired || session.IsActive() {
-			results = append(results, session)
+			results = append(results, cloneSession(session))
 		}
 	}
 	return results, nil
+}
+
+// cloneSession returns a deep copy of a session so that the store's internal
+// value cannot be mutated by callers of the read methods. The struct value
+// copy reproduces all fields (including the unexported version), and the
+// Pages slice is copied so appends on the clone do not alias the original.
+func cloneSession(s *model.Session) *model.Session {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	if s.Pages != nil {
+		cp.Pages = make([]string, len(s.Pages))
+		copy(cp.Pages, s.Pages)
+	}
+	return &cp
 }
 
 // UpdateSession updates an existing session.
@@ -66,34 +89,57 @@ func (s *MemoryStore) UpdateSession(ctx context.Context, session *model.Session)
 		return model.ErrSessionNotFound
 	}
 
-	// Validate state transition rules
-	switch session.State {
+	// A session that has already reached a terminal state (expired or closed)
+	// must not be revived with new activity. This is what guards session
+	// boundaries: once ExpireSessions (or Complete) has closed a session,
+	// appending further events to it would misattribute those events to a
+	// session that should be considered finished.
+	//
+	// Detect a "new activity" update as one that either advances the last
+	// event time or bumps the event count beyond what is stored. Such an
+	// update can only come from AddEvent/processExistingEvent. Pure
+	// metadata updates (e.g. ReclassifyUserType touching only UserType)
+	// leave LastEventTime and EventCount unchanged and are still allowed
+	// while the session is active.
+	if existing.State == model.SessionExpired || existing.State == model.SessionClosed {
+		newActivity :=
+			session.LastEventTime.After(existing.LastEventTime) ||
+				session.EventCount > existing.EventCount
+		if newActivity {
+			return model.ErrInvalidState
+		}
+		// No new activity: a terminal session may only be left in its
+		// terminal state. Reject any attempt to flip it back to active.
+		if session.State != existing.State {
+			return model.ErrInvalidState
+		}
+	}
+
+	// Validate forward state transitions. The table below permits:
+	//   active  -> active   (event or metadata updates)
+	//   active  -> expired  (ExpireSessions-style transition)
+	//   active  -> closed   (Complete)
+	//   expired -> expired  (no-op re-expiration, no new activity)
+	//   closed  -> closed   (no-op, no new activity)
+	// and rejects reviving a terminal session (already handled above) and
+	// any unknown state.
+	switch existing.State {
 	case model.SessionActive:
-		// Verify the incoming session is not marked as expired
-		if session.State == model.SessionExpired {
+		switch session.State {
+		case model.SessionActive, model.SessionExpired, model.SessionClosed:
+		default:
 			return model.ErrInvalidState
 		}
 	case model.SessionExpired:
-		// Allow explicit expiration updates
+		if session.State != model.SessionExpired {
+			return model.ErrInvalidState
+		}
 	case model.SessionClosed:
-		// Verify the stored session is not already closed
-		if existing.State == model.SessionClosed {
+		if session.State != model.SessionClosed {
 			return model.ErrInvalidState
 		}
 	default:
 		return model.ErrInvalidState
-	}
-
-	// Version check with state-aware comparison
-	if existing.Version() > 0 {
-		if session.Version() <= existing.Version() {
-			// Allow updates only if the existing session is not expired
-			// and the new version is strictly greater
-			if existing.State == model.SessionExpired {
-				return model.ErrInvalidState
-			}
-			return model.ErrInvalidState
-		}
 	}
 
 	// Preserve creation timestamp and ID
@@ -105,7 +151,10 @@ func (s *MemoryStore) UpdateSession(ctx context.Context, session *model.Session)
 		session.TotalDuration = existing.ComputeDuration()
 	}
 
-	*existing = *session
+	// Commit a defensive copy so the caller's pointer cannot later mutate
+	// the stored value (and the Pages slice does not alias the caller's).
+	stored := cloneSession(session)
+	*existing = *stored
 	return nil
 }
 
@@ -144,7 +193,7 @@ func (s *MemoryStore) ListSessions(ctx context.Context, query model.SessionQuery
 				continue
 			}
 		}
-		results = append(results, session)
+		results = append(results, cloneSession(session))
 	}
 
 	total := len(results)

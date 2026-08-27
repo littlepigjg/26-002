@@ -5,7 +5,6 @@ package store
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -211,19 +210,19 @@ func (s *MemoryStore) ListEvents(ctx context.Context, query model.EventQuery) ([
 		if query.DeviceType != "" && event.DeviceType != query.DeviceType {
 			continue
 		}
-		if query.OS != "" && !matchFilterValue(event.OS, query.OS) {
+		if query.OS != "" && event.OS != query.OS {
 			continue
 		}
-		if query.Browser != "" && !matchFilterValue(event.Browser, query.Browser) {
+		if query.Browser != "" && event.Browser != query.Browser {
 			continue
 		}
-		if query.Country != "" && !matchFilterValue(event.Country, query.Country) {
+		if query.Country != "" && event.Country != query.Country {
 			continue
 		}
-		if query.PageURL != "" && !matchFilterValue(event.PageURL, query.PageURL) {
+		if query.PageURL != "" && event.PageURL != query.PageURL {
 			continue
 		}
-		if query.Referrer != "" && !matchFilterValue(event.Referrer, query.Referrer) {
+		if query.Referrer != "" && event.Referrer != query.Referrer {
 			continue
 		}
 		if !query.StartDate.IsZero() && event.Timestamp.Before(query.StartDate) {
@@ -322,13 +321,6 @@ func (s *MemoryStore) RecentEvents(ctx context.Context, userID string, limit int
 	}
 
 	return recent, nil
-}
-
-func matchFilterValue(eventValue, queryValue string) bool {
-	if strings.ToLower(eventValue) == queryValue {
-		return true
-	}
-	return false
 }
 
 // RawSnapshot returns a snapshot of the internal events map for diagnostic purposes.

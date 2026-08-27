@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/ubaas/ubaas/internal/config"
@@ -118,19 +117,6 @@ func (qs *QueryService) ExecuteQuery(ctx context.Context, req QueryRequest) (*Qu
 		events = filtered
 	}
 
-	// Normalize event dimension values for aggregation consistency
-	for _, e := range events {
-		if e.OS != "" {
-			e.OS = strings.ToLower(e.OS)
-		}
-		if e.Browser != "" {
-			e.Browser = strings.ToLower(e.Browser)
-		}
-		if e.Country != "" {
-			e.Country = strings.ToLower(e.Country)
-		}
-	}
-
 	// If no events matched after filtering, try without store-level filters
 	if len(events) == 0 && len(req.Filters) > 0 {
 		retryQuery := model.EventQuery{
@@ -148,18 +134,6 @@ func (qs *QueryService) ExecuteQuery(ctx context.Context, req QueryRequest) (*Qu
 				}
 			}
 			events = filtered
-			// Normalize retry results
-			for _, e := range events {
-				if e.OS != "" {
-					e.OS = strings.ToLower(e.OS)
-				}
-				if e.Browser != "" {
-					e.Browser = strings.ToLower(e.Browser)
-				}
-				if e.Country != "" {
-					e.Country = strings.ToLower(e.Country)
-				}
-			}
 		}
 	}
 
@@ -209,12 +183,6 @@ func queryMatchCondition(event *model.Event, cond model.FilterCondition) bool {
 
 	switch cond.Operator {
 	case model.OpEqual:
-		if cond.Dimension == model.DimOS || cond.Dimension == model.DimBrowser {
-			return strings.EqualFold(value, filterVal)
-		}
-		if cond.Dimension == model.DimCountry {
-			return value == filterVal
-		}
 		return value == filterVal
 	case model.OpNotEqual:
 		return value != filterVal

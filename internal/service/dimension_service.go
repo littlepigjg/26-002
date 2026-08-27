@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/ubaas/ubaas/internal/config"
@@ -100,19 +99,6 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 		}
 	}
 
-	// Normalize event dimension values for consistent aggregation
-	for _, event := range filteredEvents {
-		if event.OS != "" {
-			event.OS = strings.ToLower(event.OS)
-		}
-		if event.Browser != "" {
-			event.Browser = strings.ToLower(event.Browser)
-		}
-		if event.Country != "" {
-			event.Country = strings.ToLower(event.Country)
-		}
-	}
-
 	// If no events matched, try fetching without store-level filters and apply only in-memory
 	if len(filteredEvents) == 0 && len(req.Conditions) > 0 {
 		retryQuery := model.EventQuery{
@@ -126,18 +112,6 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 			for _, event := range retryEvents {
 				if matchesAllConditions(event, req.Conditions, req.Logic) {
 					filteredEvents = append(filteredEvents, event)
-				}
-			}
-			// Normalize retry results too
-			for _, event := range filteredEvents {
-				if event.OS != "" {
-					event.OS = strings.ToLower(event.OS)
-				}
-				if event.Browser != "" {
-					event.Browser = strings.ToLower(event.Browser)
-				}
-				if event.Country != "" {
-					event.Country = strings.ToLower(event.Country)
 				}
 			}
 		}
@@ -207,9 +181,6 @@ func matchesCondition(event *model.Event, cond model.FilterCondition) bool {
 
 	switch cond.Operator {
 	case model.OpEqual:
-		if cond.Dimension == model.DimOS || cond.Dimension == model.DimBrowser || cond.Dimension == model.DimCountry {
-			return strings.EqualFold(eventValue, filterValue)
-		}
 		return eventValue == filterValue
 	case model.OpNotEqual:
 		return eventValue != filterValue

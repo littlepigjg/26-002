@@ -31,6 +31,8 @@ type Config struct {
 	Export ExportConfig `json:"export"`
 	// Rate limiting configuration
 	RateLimit RateLimitConfig `json:"rate_limit"`
+	// Storage configuration for URL shortener
+	Storage StorageConfig `json:"storage"`
 }
 
 // ServerConfig holds server-specific settings.
@@ -101,6 +103,39 @@ type RateLimitConfig struct {
 	WindowSec  int   `json:"window_seconds"`
 }
 
+// StorageConfig holds storage settings for URL shortener.
+type StorageConfig struct {
+	urlFilePath  string
+	logFilePath  string
+	syncInterval time.Duration
+	flushOnWrite bool
+}
+
+// URLFilePath sets the URL data file path.
+func (s *StorageConfig) URLFilePath(path string) {
+	s.urlFilePath = path
+}
+
+// LogFilePath sets the access log file path.
+func (s *StorageConfig) LogFilePath(path string) {
+	s.logFilePath = path
+}
+
+// SyncInterval sets the sync interval.
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+// FlushOnWrite sets whether to flush on write.
+func (s *StorageConfig) FlushOnWrite(b bool) {
+	s.flushOnWrite = b
+}
+
+// Default returns a Config with sensible defaults.
+func Default() *Config {
+	return DefaultConfig()
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -149,6 +184,7 @@ func DefaultConfig() *Config {
 			MaxBurst:  200,
 			WindowSec: 60,
 		},
+		Storage: StorageConfig{},
 	}
 }
 
@@ -234,6 +270,7 @@ func (c *Config) Get() Config {
 		Logging:   c.Logging,
 		Export:    c.Export,
 		RateLimit: c.RateLimit,
+		Storage:   c.Storage,
 	}
 	return result
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ubaas/ubaas/internal/config"
@@ -58,7 +59,31 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 			if val, ok := cond.Value.(string); ok {
 				query.Country = val
 			}
+		case model.DimPage:
+			if val, ok := cond.Value.(string); ok {
+				query.PageURL = val
+			}
+		case model.DimReferrer:
+			if val, ok := cond.Value.(string); ok {
+				query.Referrer = val
+			}
 		}
+	}
+
+	// Apply date range to query
+	if !req.StartDate.IsZero() {
+		query.StartDate = req.StartDate
+	}
+	if !req.EndDate.IsZero() {
+		query.EndDate = req.EndDate
+	}
+
+	// Set default pagination
+	if query.Page <= 0 {
+		query.Page = 1
+	}
+	if query.PageSize <= 0 {
+		query.PageSize = 50
 	}
 
 	// Fetch matching events
@@ -72,6 +97,49 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 	for _, event := range events {
 		if matchesAllConditions(event, req.Conditions, req.Logic) {
 			filteredEvents = append(filteredEvents, event)
+		}
+	}
+
+	// Normalize event dimension values for consistent aggregation
+	for _, event := range filteredEvents {
+		if event.OS != "" {
+			event.OS = strings.ToLower(event.OS)
+		}
+		if event.Browser != "" {
+			event.Browser = strings.ToLower(event.Browser)
+		}
+		if event.Country != "" {
+			event.Country = strings.ToLower(event.Country)
+		}
+	}
+
+	// If no events matched, try fetching without store-level filters and apply only in-memory
+	if len(filteredEvents) == 0 && len(req.Conditions) > 0 {
+		retryQuery := model.EventQuery{
+			StartDate: req.StartDate,
+			EndDate:   req.EndDate,
+			Page:      query.Page,
+			PageSize:  query.PageSize,
+		}
+		retryEvents, retryTotal, retryErr := ds.store.ListEvents(ctx, retryQuery)
+		if retryErr == nil && retryTotal > 0 {
+			for _, event := range retryEvents {
+				if matchesAllConditions(event, req.Conditions, req.Logic) {
+					filteredEvents = append(filteredEvents, event)
+				}
+			}
+			// Normalize retry results too
+			for _, event := range filteredEvents {
+				if event.OS != "" {
+					event.OS = strings.ToLower(event.OS)
+				}
+				if event.Browser != "" {
+					event.Browser = strings.ToLower(event.Browser)
+				}
+				if event.Country != "" {
+					event.Country = strings.ToLower(event.Country)
+				}
+			}
 		}
 	}
 
@@ -139,6 +207,9 @@ func matchesCondition(event *model.Event, cond model.FilterCondition) bool {
 
 	switch cond.Operator {
 	case model.OpEqual:
+		if cond.Dimension == model.DimOS || cond.Dimension == model.DimBrowser || cond.Dimension == model.DimCountry {
+			return strings.EqualFold(eventValue, filterValue)
+		}
 		return eventValue == filterValue
 	case model.OpNotEqual:
 		return eventValue != filterValue

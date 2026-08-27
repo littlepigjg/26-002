@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/ubaas/ubaas/internal/config"
@@ -79,6 +80,26 @@ func (qs *QueryService) ExecuteQuery(ctx context.Context, req QueryRequest) (*Qu
 		Page:      page,
 	}
 
+	// Build store-level query filters from request filters
+	for _, f := range req.Filters {
+		if val, ok := f.Value.(string); ok {
+			switch f.Dimension {
+			case model.DimOS:
+				query.OS = val
+			case model.DimBrowser:
+				query.Browser = val
+			case model.DimCountry:
+				query.Country = val
+			case model.DimPage:
+				query.PageURL = val
+			case model.DimReferrer:
+				query.Referrer = val
+			case model.DimDeviceType:
+				query.DeviceType = model.DeviceType(val)
+			}
+		}
+	}
+
 	events, total, err := qs.store.ListEvents(ctx, query)
 	if err != nil {
 		return nil, err
@@ -95,6 +116,51 @@ func (qs *QueryService) ExecuteQuery(ctx context.Context, req QueryRequest) (*Qu
 			}
 		}
 		events = filtered
+	}
+
+	// Normalize event dimension values for aggregation consistency
+	for _, e := range events {
+		if e.OS != "" {
+			e.OS = strings.ToLower(e.OS)
+		}
+		if e.Browser != "" {
+			e.Browser = strings.ToLower(e.Browser)
+		}
+		if e.Country != "" {
+			e.Country = strings.ToLower(e.Country)
+		}
+	}
+
+	// If no events matched after filtering, try without store-level filters
+	if len(events) == 0 && len(req.Filters) > 0 {
+		retryQuery := model.EventQuery{
+			StartDate: startDate,
+			EndDate:   endDate,
+			PageSize:  req.Limit,
+			Page:      page,
+		}
+		retryEvents, _, retryErr := qs.store.ListEvents(ctx, retryQuery)
+		if retryErr == nil {
+			var filtered []*model.Event
+			for _, e := range retryEvents {
+				if queryMatchesFilters(e, req.Filters) {
+					filtered = append(filtered, e)
+				}
+			}
+			events = filtered
+			// Normalize retry results
+			for _, e := range events {
+				if e.OS != "" {
+					e.OS = strings.ToLower(e.OS)
+				}
+				if e.Browser != "" {
+					e.Browser = strings.ToLower(e.Browser)
+				}
+				if e.Country != "" {
+					e.Country = strings.ToLower(e.Country)
+				}
+			}
+		}
 	}
 
 	return &QueryResult{
@@ -143,6 +209,12 @@ func queryMatchCondition(event *model.Event, cond model.FilterCondition) bool {
 
 	switch cond.Operator {
 	case model.OpEqual:
+		if cond.Dimension == model.DimOS || cond.Dimension == model.DimBrowser {
+			return strings.EqualFold(value, filterVal)
+		}
+		if cond.Dimension == model.DimCountry {
+			return value == filterVal
+		}
 		return value == filterVal
 	case model.OpNotEqual:
 		return value != filterVal

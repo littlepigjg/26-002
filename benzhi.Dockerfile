@@ -4,6 +4,10 @@ FROM golang:1.26-alpine AS builder
 # Set working directory
 WORKDIR /app
 
+# Build arguments for cross-platform support
+ARG GOARCH=amd64
+ENV GOARCH=${GOARCH}
+
 # Copy go mod files first for better caching
 COPY go.mod go.sum* ./
 
@@ -14,7 +18,7 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o ubaas-server ./cmd/server/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${GOARCH} go build -o ubaas-server ./cmd/server/
 
 # Create minimal runtime image
 FROM alpine:3.19

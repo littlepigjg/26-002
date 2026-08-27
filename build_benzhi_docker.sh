@@ -1,15 +1,30 @@
 #!/bin/bash
 # UBAAS Docker Build Script
-# This script builds the Docker image for the UBAAS application.
+# Usage: ./build_benzhi_docker.sh [IMAGE_NAME] [IMAGE_TAG] [PLATFORM]
+#   IMAGE_NAME:  Docker image name (default: ubaas-server)
+#   IMAGE_TAG:   Docker image tag (default: latest)
+#   PLATFORM:    Target platform (e.g., linux/amd64, linux/arm64)
 
 set -e
 
+# Parse positional arguments
+if [ $# -ge 1 ]; then
+    IMAGE_NAME="$1"
+fi
+if [ $# -ge 2 ]; then
+    IMAGE_TAG="$2"
+fi
+if [ $# -ge 3 ]; then
+    PLATFORM="$3"
+fi
+
 # Configuration
-IMAGE_NAME="ubaas-server"
+IMAGE_NAME="${IMAGE_NAME:-ubaas-server}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 DOCKERFILE="${DOCKERFILE:-benzhi.Dockerfile}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 REGISTRY="${REGISTRY:-}"
+PLATFORM="${PLATFORM:-}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -50,6 +65,9 @@ log_info "Starting UBAAS Docker image build..."
 log_info "Dockerfile: $DOCKERFILE"
 log_info "Context directory: $CONTEXT_DIR"
 log_info "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+if [ -n "$PLATFORM" ]; then
+    log_info "Platform: $PLATFORM"
+fi
 
 # Check if Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
@@ -57,12 +75,22 @@ if [ ! -f "$DOCKERFILE" ]; then
     exit 1
 fi
 
+# Extract GOARCH from platform if specified
+BUILD_ARGS=""
+if [ -n "$PLATFORM" ]; then
+    GOARCH=$(echo "$PLATFORM" | cut -d'/' -f2)
+    BUILD_ARGS="--build-arg GOARCH=${GOARCH} --platform ${PLATFORM}"
+    log_info "Building for architecture: ${GOARCH} (from platform ${PLATFORM})"
+fi
+
 # Build the Docker image
-docker build \
+docker buildx build \
     --file "$DOCKERFILE" \
     --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
     --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+    --load \
+    $BUILD_ARGS \
     "$CONTEXT_DIR"
 
 BUILD_EXIT_CODE=$?

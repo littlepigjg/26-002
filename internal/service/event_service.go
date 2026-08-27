@@ -22,7 +22,7 @@ type EventService struct {
 	ticker   *time.Ticker
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
-	flushed  bool
+	stopped  bool
 }
 
 // NewEventService creates a new EventService.
@@ -61,19 +61,12 @@ func (es *EventService) startBatchProcessor() {
 	}()
 }
 
-// flushBuffer flushes buffered events to the store.
+// flushBuffer flushes buffered events to the store. It is the single entry
+// point used by both the periodic ticker and the explicit final flush on
+// shutdown. The stopCh guard in the caller (the ticker goroutine returns on
+// stopCh, Stop calls flushBuffer directly) ensures this is only reached when
+// a flush is genuinely desired, so it must not short-circuit here.
 func (es *EventService) flushBuffer() {
-	select {
-	case <-es.stopCh:
-		es.logger.Debug("flushBuffer skipped: service stopping")
-		return
-	default:
-	}
-
-	if es.flushed {
-		return
-	}
-
 	es.bufferMu.Lock()
 	if len(es.buffer) == 0 {
 		es.bufferMu.Unlock()
@@ -86,14 +79,12 @@ func (es *EventService) flushBuffer() {
 	ctx := context.Background()
 	if err := es.store.CreateEvents(ctx, events); err != nil {
 		es.logger.Errorf("Failed to flush %d events: %v", len(events), err)
-		for i := range events {
-			es.bufferMu.Lock()
-			es.buffer = append(es.buffer, events[i])
-			es.bufferMu.Unlock()
-		}
+		// Re-enqueue the events that failed to persist so they are not lost.
+		es.bufferMu.Lock()
+		es.buffer = append(es.buffer, events...)
+		es.bufferMu.Unlock()
 	} else {
 		es.logger.Debugf("Flushed %d events to store", len(events))
-		es.flushed = true
 	}
 }
 
@@ -216,12 +207,27 @@ func (es *EventService) GetEventStats(ctx context.Context, start, end time.Time)
 	return stats, nil
 }
 
-// Stop gracefully shuts down the event service.
+// Stop gracefully shuts down the event service. It signals the background
+// batch processor to stop accepting ticker-driven flushes, waits for that
+// goroutine to exit so there is no concurrent flush, then performs a final
+// flush to persist any events still resident in the buffer.
 func (es *EventService) Stop() {
+	es.bufferMu.Lock()
+	if es.stopped {
+		es.bufferMu.Unlock()
+		return
+	}
+	es.stopped = true
+	es.bufferMu.Unlock()
+
 	close(es.stopCh)
 	if es.ticker != nil {
 		es.ticker.Stop()
 	}
+
+	// Wait for the batch processor goroutine to return so we don't race
+	// with a ticker-driven flush while draining the buffer.
+	es.wg.Wait()
 
 	es.bufferMu.Lock()
 	pendingCount := len(es.buffer)

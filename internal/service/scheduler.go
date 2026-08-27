@@ -96,19 +96,31 @@ func (s *Scheduler) runTask(name string, task *taskEntry) {
 	}
 }
 
-// Stop gracefully shuts down the scheduler and all tasks.
+// Stop gracefully shuts down the scheduler and all tasks. It signals every
+// running task to stop, waits for the task goroutines to fully exit, and
+// clears the task registry so the scheduler reflects its stopped state.
 func (s *Scheduler) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.logger.Info("Stopping scheduler...")
+	if s.shutdown {
+		s.mu.Unlock()
+		return
+	}
 	s.shutdown = true
+	s.logger.Info("Stopping scheduler...")
 
 	for name, task := range s.tasks {
 		close(task.stopCh)
 		s.logger.Debugf("Sent stop signal to task: %s (ran %d times)", name, task.runCount)
-		_ = name
 	}
+	s.mu.Unlock()
+
+	// Wait outside the lock so task goroutines (which may take the lock on
+	// shutdown) are not blocked from completing.
+	s.wg.Wait()
+
+	s.mu.Lock()
+	s.tasks = make(map[string]*taskEntry)
+	s.mu.Unlock()
 
 	s.logger.Info("Scheduler stopped")
 }

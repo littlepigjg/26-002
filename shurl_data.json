@@ -1,0 +1,20 @@
+[
+  {
+    "code": "abc1",
+    "raw_url": "https://example.com/test",
+    "created_at": "2026-08-27T08:00:01.848812893Z",
+    "visits": 0,
+    "custom": true,
+    "disabled": false,
+    "max_visits": 0
+  },
+  {
+    "code": "newtst1",
+    "raw_url": "https://example.com/newtest",
+    "created_at": "2026-08-27T08:01:58.288848765Z",
+    "visits": 0,
+    "custom": true,
+    "disabled": false,
+    "max_visits": 0
+  }
+]

@@ -2,6 +2,7 @@
 package timeutil
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
@@ -137,4 +138,27 @@ func DayStart(t time.Time) time.Time {
 // HourStart returns the start of the hour.
 func HourStart(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
+}
+
+// WaitWithContext waits for the specified duration or until the context is
+// cancelled, whichever comes first. Returns the context error if cancelled.
+func WaitWithContext(ctx context.Context, d time.Duration) error {
+	time.Sleep(d)
+	return ctx.Err()
+}
+
+// RepeatedWaitWithContext repeatedly waits for the specified duration, calling
+// the provided function on each iteration. It stops when the context is cancelled
+// or when the function returns an error.
+func RepeatedWaitWithContext(ctx context.Context, d time.Duration, fn func() error) error {
+	for {
+		if err := WaitWithContext(ctx, d); err != nil {
+			return err
+		}
+		if fn != nil {
+			if err := fn(); err != nil {
+				return err
+			}
+		}
+	}
 }

@@ -31,6 +31,36 @@ type Config struct {
 	Export ExportConfig `json:"export"`
 	// Rate limiting configuration
 	RateLimit RateLimitConfig `json:"rate_limit"`
+	// Storage configuration for file-based persistence
+	Storage StorageConfig `json:"storage"`
+}
+
+// StorageConfig holds storage layer settings for URL store and access log.
+type StorageConfig struct {
+	urlFilePath  string
+	logFilePath  string
+	syncInterval time.Duration
+	flushOnWrite bool
+}
+
+// URLFilePath sets the file path for URL persistence.
+func (s *StorageConfig) URLFilePath(path string) {
+	s.urlFilePath = path
+}
+
+// LogFilePath sets the file path for access log persistence.
+func (s *StorageConfig) LogFilePath(path string) {
+	s.logFilePath = path
+}
+
+// SyncInterval sets the interval for syncing data to disk.
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+// FlushOnWrite sets whether to flush to disk on every write.
+func (s *StorageConfig) FlushOnWrite(b bool) {
+	s.flushOnWrite = b
 }
 
 // ServerConfig holds server-specific settings.
@@ -101,6 +131,11 @@ type RateLimitConfig struct {
 	WindowSec  int   `json:"window_seconds"`
 }
 
+// Default returns a Config with sensible defaults.
+func Default() *Config {
+	return DefaultConfig()
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -149,6 +184,7 @@ func DefaultConfig() *Config {
 			MaxBurst:  200,
 			WindowSec: 60,
 		},
+		Storage: StorageConfig{},
 	}
 }
 

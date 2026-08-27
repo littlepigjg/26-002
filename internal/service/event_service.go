@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -13,13 +14,15 @@ import (
 	"github.com/ubaas/ubaas/internal/model"
 	"github.com/ubaas/ubaas/internal/store"
 	"github.com/ubaas/ubaas/pkg/logger"
+	"github.com/ubaas/ubaas/pkg/validator"
 )
 
 // EventService handles event ingestion and management.
 type EventService struct {
-	store  store.Store
-	config *config.Config
-	logger *logger.Logger
+	store     store.Store
+	userStore *store.UserStore
+	config    *config.Config
+	logger    *logger.Logger
 
 	// Buffer for batch processing
 	bufferMu sync.Mutex
@@ -37,6 +40,9 @@ func NewEventService(st store.Store, cfg *config.Config, log *logger.Logger) *Ev
 		logger: log,
 		buffer: make([]*model.Event, 0, 100),
 		stopCh: make(chan struct{}),
+	}
+	if ms, ok := st.(*store.MemoryStore); ok {
+		es.userStore = store.NewUserStore(ms)
 	}
 	es.startBatchProcessor()
 	return es
@@ -91,15 +97,29 @@ func (es *EventService) CreateEvent(ctx context.Context, req *model.EventCreateR
 		return nil, err
 	}
 
+	sanitizer := validator.NewSanitizer()
+	sanitizedUserID, sanitizeErr := sanitizer.SanitizeUserID(req.UserID)
+	if sanitizeErr != nil {
+		es.logger.Warnf("Failed to sanitize user ID: %v, using original", sanitizeErr)
+	}
+	if sanitizedUserID != "" {
+		req.UserID = sanitizedUserID
+	}
+
 	event := req.ToEvent()
 
-	// For single events, store directly to ensure immediate availability
 	if err := es.store.CreateEvent(ctx, event); err != nil {
 		es.logger.Errorf("Failed to create event: %v", err)
 		return nil, err
 	}
 
-	// Also add to batch buffer for batch processing
+	if es.userStore != nil {
+		_, updateErr := es.userStore.UpdateUser(ctx, event)
+		if updateErr != nil {
+			es.logger.Warnf("Failed to update user dimension for %s: %v", event.UserID, updateErr)
+		}
+	}
+
 	es.bufferMu.Lock()
 	es.buffer = append(es.buffer, event)
 	shouldFlush := len(es.buffer) >= 100
@@ -112,21 +132,48 @@ func (es *EventService) CreateEvent(ctx context.Context, req *model.EventCreateR
 	return event, nil
 }
 
+// GetUserDimension retrieves the user dimension for a given user ID.
+func (es *EventService) GetUserDimension(ctx context.Context, userID string) (*model.UserDimension, error) {
+	if es.userStore == nil {
+		return nil, fmt.Errorf("user store not available")
+	}
+	return es.userStore.GetUser(ctx, userID)
+}
+
+// ListUserDimensions returns all user dimensions.
+func (es *EventService) ListUserDimensions(ctx context.Context) ([]*model.UserDimension, error) {
+	if es.userStore == nil {
+		return nil, fmt.Errorf("user store not available")
+	}
+	return es.userStore.ListUsers(ctx)
+}
+
 // CreateEvents processes and stores multiple events efficiently.
 func (es *EventService) CreateEvents(ctx context.Context, reqs []*model.EventCreateRequest) ([]*model.Event, error) {
+	sanitizer := validator.NewSanitizer()
 	events := make([]*model.Event, 0, len(reqs))
 	for _, req := range reqs {
 		if err := validateEventRequest(req); err != nil {
 			continue
 		}
+		sanitizedID, sanitizeErr := sanitizer.SanitizeUserID(req.UserID)
+		if sanitizeErr == nil && sanitizedID != "" {
+			req.UserID = sanitizedID
+		}
 		events = append(events, req.ToEvent())
 	}
 
 	if len(events) > 0 {
-		// Store directly for batch operations
 		if err := es.store.CreateEvents(ctx, events); err != nil {
 			es.logger.Errorf("Failed to create %d events: %v", len(events), err)
 			return nil, err
+		}
+		if es.userStore != nil {
+			for _, event := range events {
+				if _, err := es.userStore.UpdateUser(ctx, event); err != nil {
+					es.logger.Debugf("Failed to update user dimension: %v", err)
+				}
+			}
 		}
 	}
 
@@ -225,9 +272,6 @@ func validateEventRequest(req *model.EventCreateRequest) error {
 	if req == nil {
 		return model.ErrInvalidRequest
 	}
-	if req.UserID == "" {
-		return model.ErrInvalidRequest
-	}
 	if req.Type == "" || !req.Type.Valid() {
 		return model.ErrInvalidRequest
 	}
@@ -235,6 +279,9 @@ func validateEventRequest(req *model.EventCreateRequest) error {
 		return model.ErrInvalidRequest
 	}
 	if req.DeviceType != "" && !req.DeviceType.Valid() {
+		return model.ErrInvalidRequest
+	}
+	if len(req.UserID) > 128 {
 		return model.ErrInvalidRequest
 	}
 	return nil

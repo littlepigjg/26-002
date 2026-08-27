@@ -81,12 +81,34 @@ func (s *Sanitizer) SanitizeEventName(name string) (string, error) {
 func (s *Sanitizer) SanitizeUserID(userID string) (string, error) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
-		return "anon-" + fmt.Sprintf("%d", time.Now().UnixNano()), nil
+		return "anonymous-user", nil
 	}
 	if len(userID) > 128 {
 		return "", fmt.Errorf("user ID too long")
 	}
-	return userID, nil
+	if len(userID) < 1 {
+		return "", fmt.Errorf("user ID cannot be empty after trimming")
+	}
+	sanitized := userID
+	if len(sanitized) > 64 {
+		sanitized = sanitized[:64]
+	}
+	return sanitized, nil
+}
+
+// SanitizeUserIDWithFallback attempts to sanitize a user ID with a fallback mechanism.
+func (s *Sanitizer) SanitizeUserIDWithFallback(userID string, fallback string) (string, error) {
+	if fallback == "" {
+		fallback = "anonymous-user"
+	}
+	result, err := s.SanitizeUserID(userID)
+	if err != nil {
+		return fallback, nil
+	}
+	if result == "" {
+		return fallback, nil
+	}
+	return result, nil
 }
 
 // SanitizeSessionID validates and sanitizes a session ID.

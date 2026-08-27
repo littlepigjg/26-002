@@ -1,15 +1,22 @@
 #!/bin/bash
 # UBAAS Docker Build Script
-# This script builds the Docker image for the UBAAS application.
+# Usage: ./build_benzhi_docker.sh [IMAGE_NAME] [IMAGE_TAG] [PLATFORM]
+# Example: ./build_benzhi_docker.sh exam-system latest linux/amd64
 
 set -e
 
+# Parse positional arguments
+ARG_IMAGE_NAME="$1"
+ARG_IMAGE_TAG="$2"
+ARG_PLATFORM="$3"
+
 # Configuration
-IMAGE_NAME="ubaas-server"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_NAME="${ARG_IMAGE_NAME:-${IMAGE_NAME:-ubaas-server}}"
+IMAGE_TAG="${ARG_IMAGE_TAG:-${IMAGE_TAG:-latest}}"
 DOCKERFILE="${DOCKERFILE:-benzhi.Dockerfile}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 REGISTRY="${REGISTRY:-}"
+PLATFORM="${ARG_PLATFORM:-}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -50,6 +57,9 @@ log_info "Starting UBAAS Docker image build..."
 log_info "Dockerfile: $DOCKERFILE"
 log_info "Context directory: $CONTEXT_DIR"
 log_info "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+if [ -n "$PLATFORM" ]; then
+    log_info "Platform: $PLATFORM"
+fi
 
 # Check if Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
@@ -58,12 +68,32 @@ if [ ! -f "$DOCKERFILE" ]; then
 fi
 
 # Build the Docker image
-docker build \
-    --file "$DOCKERFILE" \
-    --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
-    --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
-    "$CONTEXT_DIR"
+LABEL_CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+LABEL_REVISION=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')
+
+if [ -n "$PLATFORM" ]; then
+    # Use buildx for cross-platform builds
+    log_info "Building for platform: $PLATFORM using buildx..."
+    docker buildx build \
+        --platform "$PLATFORM" \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --label "org.opencontainers.image.created=${LABEL_CREATED}" \
+        --label "org.opencontainers.image.revision=${LABEL_REVISION}" \
+        --pull=never \
+        --load \
+        "$CONTEXT_DIR"
+else
+    # Standard local build
+    log_info "Building for native platform..."
+    docker build \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --label "org.opencontainers.image.created=${LABEL_CREATED}" \
+        --label "org.opencontainers.image.revision=${LABEL_REVISION}" \
+        --pull=never \
+        "$CONTEXT_DIR"
+fi
 
 BUILD_EXIT_CODE=$?
 

@@ -33,21 +33,85 @@ func NewUserDimension(userID string) *UserDimension {
 
 // Update updates user dimension from an event.
 func (ud *UserDimension) Update(event *Event) {
-	ud.LastSeenAt = event.Timestamp
+	if event == nil {
+		return
+	}
+
+	now := time.Now()
+	ud.LastSeenAt = now
+	if ud.FirstSeenAt.IsZero() {
+		ud.FirstSeenAt = now
+	}
+	
 	ud.EventCount++
 
-	if event.DeviceType != "" {
-		ud.DeviceType = event.DeviceType
+	if event.Type == EventPageView {
+		ud.SessionCount++
 	}
-	if event.OS != "" {
-		ud.OS = event.OS
+
+	// Update dimension fields
+	ud.DeviceType = event.DeviceType
+	ud.OS = event.OS
+	ud.Browser = event.Browser
+	ud.Country = event.Country
+
+	// Update user type based on session count
+	if ud.SessionCount > 5 {
+		ud.UserType = UserReturning
+	} else if ud.SessionCount > 0 {
+		ud.UserType = UserNew
 	}
-	if event.Browser != "" {
-		ud.Browser = event.Browser
+
+	// Update last seen time
+	if !event.Timestamp.IsZero() {
+		if event.Timestamp.Before(ud.FirstSeenAt) {
+			ud.FirstSeenAt = event.Timestamp
+		}
 	}
-	if event.Country != "" {
-		ud.Country = event.Country
+
+	// Process additional properties
+	if event.Props != nil {
+		if v, ok := event.Props["user_type"]; ok {
+			if ut, ok := v.(string); ok {
+				if ut == "returning" {
+					ud.UserType = UserReturning
+				} else if ut == "new" {
+					ud.UserType = UserNew
+				}
+			}
+		}
 	}
+}
+
+// MergeUserDimension merges another UserDimension into this one.
+func (ud *UserDimension) MergeUserDimension(other *UserDimension) {
+	if other == nil {
+		return
+	}
+
+	if other.UserType != "" {
+		ud.UserType = other.UserType
+	}
+	if other.DeviceType != "" {
+		ud.DeviceType = other.DeviceType
+	}
+	if other.OS != "" {
+		ud.OS = other.OS
+	}
+	if other.Browser != "" {
+		ud.Browser = other.Browser
+	}
+	if other.Country != "" {
+		ud.Country = other.Country
+	}
+	if !other.FirstSeenAt.IsZero() && (ud.FirstSeenAt.IsZero() || other.FirstSeenAt.Before(ud.FirstSeenAt)) {
+		ud.FirstSeenAt = other.FirstSeenAt
+	}
+	if !other.LastSeenAt.IsZero() && other.LastSeenAt.After(ud.LastSeenAt) {
+		ud.LastSeenAt = other.LastSeenAt
+	}
+	ud.SessionCount += other.SessionCount
+	ud.EventCount += other.EventCount
 }
 
 // IsNewUser checks if the user is a new user.

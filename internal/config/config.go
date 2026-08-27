@@ -55,6 +55,37 @@ type StoreConfig struct {
 	MaxPathLength      int           `json:"max_path_length"`
 	FlushInterval      int           `json:"flush_interval_seconds"`
 	EvictionInterval   int           `json:"eviction_interval_seconds"`
+
+	// Storage configuration for URL store and access log
+	Storage StorageConfig `json:"storage"`
+}
+
+// StorageConfig holds storage settings for URL store and access log.
+type StorageConfig struct {
+	urlFilePath   string
+	logFilePath   string
+	syncInterval  time.Duration
+	flushOnWrite  bool
+}
+
+// URLFilePath sets the URL file path.
+func (s *StorageConfig) URLFilePath(path string) {
+	s.urlFilePath = path
+}
+
+// LogFilePath sets the log file path.
+func (s *StorageConfig) LogFilePath(path string) {
+	s.logFilePath = path
+}
+
+// SyncInterval sets the sync interval.
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+// FlushOnWrite sets whether to flush on write.
+func (s *StorageConfig) FlushOnWrite(b bool) {
+	s.flushOnWrite = b
 }
 
 // SessionConfig holds session-related settings.
@@ -274,4 +305,9 @@ func (c *Config) String() string {
 		return fmt.Sprintf("Config{error: %v}", err)
 	}
 	return string(data)
+}
+
+// Default returns a Config with sensible defaults (alias for DefaultConfig).
+func Default() *Config {
+	return DefaultConfig()
 }

@@ -4,9 +4,12 @@
 
 set -e
 
+# Accept command line arguments for image name, tag, and platform
+IMAGE_NAME="${1:-ubaas-server}"
+IMAGE_TAG="${2:-latest}"
+PLATFORM="${3:-}"
+
 # Configuration
-IMAGE_NAME="ubaas-server"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
 DOCKERFILE="${DOCKERFILE:-benzhi.Dockerfile}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 REGISTRY="${REGISTRY:-}"
@@ -58,12 +61,22 @@ if [ ! -f "$DOCKERFILE" ]; then
 fi
 
 # Build the Docker image
-docker build \
-    --file "$DOCKERFILE" \
-    --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
-    --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
-    "$CONTEXT_DIR"
+BUILD_ARGS=(
+    --file "$DOCKERFILE"
+    --tag "${IMAGE_NAME}:${IMAGE_TAG}"
+    --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+)
+
+# Add platform if specified
+if [ -n "$PLATFORM" ]; then
+    log_info "Building for platform: $PLATFORM"
+    BUILD_ARGS+=(--platform "$PLATFORM")
+    # Use buildx for cross-platform builds
+    docker buildx build "${BUILD_ARGS[@]}" "$CONTEXT_DIR" --load
+else
+    docker build "${BUILD_ARGS[@]}" "$CONTEXT_DIR"
+fi
 
 BUILD_EXIT_CODE=$?
 

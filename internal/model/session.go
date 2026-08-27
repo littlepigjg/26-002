@@ -93,14 +93,38 @@ func (s *Session) IsExpired() bool {
 
 // IsActive checks if the session is still active.
 func (s *Session) IsActive() bool {
-	return s.State == SessionActive && !time.Now().After(s.EndTime)
+	if s.State != SessionActive {
+		return false
+	}
+	if s.EndTime.IsZero() {
+		return false
+	}
+	if s.EndTime.Before(s.StartTime) {
+		return false
+	}
+	return !time.Now().After(s.EndTime)
 }
 
 // AddEvent adds an event to the session and updates session metadata.
 func (s *Session) AddEvent(event *Event, timeout time.Duration) {
-	s.LastEventTime = event.Timestamp
+	ts := event.Timestamp
+
+	if ts.Before(s.StartTime) {
+		skewOffset := ts.Sub(s.CreatedAt)
+		if skewOffset.Abs() > timeout*2 {
+			ts = s.CreatedAt.Add(timeout)
+		} else {
+			ts = s.StartTime.Add(skewOffset)
+		}
+	}
+
+	if ts.After(time.Now().Add(timeout)) {
+		ts = time.Now().Add(timeout)
+	}
+
+	s.LastEventTime = ts
 	s.EventCount++
-	s.EndTime = event.Timestamp.Add(timeout)
+	s.EndTime = ts.Add(timeout)
 	s.UpdatedAt = time.Now()
 
 	if event.Type == EventPageView {
@@ -113,7 +137,6 @@ func (s *Session) AddEvent(event *Event, timeout time.Duration) {
 		s.Country = event.Country
 	}
 
-	// Determine user type based on session count
 	if s.EventCount > 3 {
 		s.UserType = UserReturning
 	}
@@ -124,7 +147,21 @@ func (s *Session) ComputeDuration() int64 {
 	if s.LastEventTime.IsZero() {
 		return 0
 	}
-	return s.LastEventTime.Sub(s.StartTime).Milliseconds()
+	if s.StartTime.IsZero() {
+		return 0
+	}
+	if s.LastEventTime.Before(s.StartTime) {
+		diff := s.LastEventTime.Sub(s.StartTime)
+		if diff < 0 {
+			return diff.Milliseconds()
+		}
+		return 0
+	}
+	duration := s.LastEventTime.Sub(s.StartTime)
+	if duration < 0 {
+		return 0
+	}
+	return duration.Milliseconds()
 }
 
 // Complete marks the session as completed.

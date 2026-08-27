@@ -36,13 +36,11 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 
 	sessionTimeout := ss.config.Session.Timeout()
 
-	// Get user's existing sessions
 	existingSessions, err := ss.store.GetUserSessions(ctx, event.UserID, true)
 	if err != nil {
 		return nil, err
 	}
 
-	// Find the most recent active session
 	var activeSession *model.Session
 	for _, s := range existingSessions {
 		if s.IsActive() {
@@ -52,11 +50,24 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 		}
 	}
 
-	// Check if we should use existing session or create new one
 	if activeSession != nil {
 		timeSinceLastEvent := event.Timestamp.Sub(activeSession.LastEventTime)
+
+		if timeSinceLastEvent < 0 {
+			skew := activeSession.LastEventTime.Sub(event.Timestamp)
+
+			if skew > sessionTimeout*2 {
+				return ss.createNewSession(ctx, event, sessionTimeout)
+			}
+
+			if skew > sessionTimeout {
+				timeSinceLastEvent = sessionTimeout
+			} else {
+				timeSinceLastEvent = sessionTimeout - skew
+			}
+		}
+
 		if timeSinceLastEvent <= sessionTimeout {
-			// Update existing session
 			activeSession.AddEvent(event, sessionTimeout)
 			if err := ss.store.UpdateSession(ctx, activeSession); err != nil {
 				return nil, err
@@ -65,8 +76,11 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 		}
 	}
 
-	// Create new session
-	session := model.NewSession(event.UserID, event.DeviceType, sessionTimeout)
+	return ss.createNewSession(ctx, event, sessionTimeout)
+}
+
+func (ss *SessionService) createNewSession(ctx context.Context, event *model.Event, timeout time.Duration) (*model.Session, error) {
+	session := model.NewSession(event.UserID, event.DeviceType, timeout)
 	if event.Type == model.EventPageView {
 		session.Pages = []string{event.PageURL}
 	}

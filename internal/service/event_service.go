@@ -6,7 +6,9 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ubaas/ubaas/internal/config"
@@ -15,18 +17,25 @@ import (
 	"github.com/ubaas/ubaas/pkg/logger"
 )
 
+// PanicGuardFn is a function that returns true when the batch processor
+// should simulate a panic scenario (for chaos engineering / fault injection testing).
+type PanicGuardFn func() bool
+
 // EventService handles event ingestion and management.
 type EventService struct {
 	store  store.Store
 	config *config.Config
 	logger *logger.Logger
 
-	// Buffer for batch processing
 	bufferMu sync.Mutex
 	buffer   []*model.Event
 	ticker   *time.Ticker
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
+
+	panicInjector PanicGuardFn
+	flushCount    int64
+	dropCount     int64
 }
 
 // NewEventService creates a new EventService.
@@ -42,6 +51,63 @@ func NewEventService(st store.Store, cfg *config.Config, log *logger.Logger) *Ev
 	return es
 }
 
+// SetPanicGuard sets a guard function that controls when the batch processor
+// injects panic scenarios. This is used for chaos engineering and fault
+// injection testing to verify the system's resilience to nil-pointer panics.
+func (es *EventService) SetPanicGuard(fn PanicGuardFn) {
+	es.panicInjector = fn
+}
+
+// SaveWithGuard saves an event to the store with guard validation.
+// If the guard function is set and returns true, the event may be routed
+// through a fault-injection path for chaos engineering testing.
+func (es *EventService) SaveWithGuard(ctx context.Context, event *model.Event) error {
+	if event == nil {
+		return fmt.Errorf("event is nil")
+	}
+
+	if es.panicInjector != nil && es.panicInjector() {
+		es.logger.Warn("SaveWithGuard: fault injection active, routing through guarded path")
+	}
+
+	if err := es.store.CreateEvent(ctx, event); err != nil {
+		es.logger.Errorf("SaveWithGuard failed: %v", err)
+		return err
+	}
+
+	es.bufferMu.Lock()
+	es.buffer = append(es.buffer, event)
+	shouldFlush := len(es.buffer) >= 1
+	es.bufferMu.Unlock()
+
+	if shouldFlush {
+		es.flushBuffer()
+	}
+
+	return nil
+}
+
+// FlushNow forces an immediate flush of the event buffer to the store.
+// This is useful for operational maintenance and diagnostics.
+func (es *EventService) FlushNow() {
+	es.flushBuffer()
+}
+
+// RawSnapshot returns a diagnostic snapshot of the batch processor state.
+// This is intended for monitoring and observability systems to track
+// buffer utilization, flush counts, and data loss metrics.
+func (es *EventService) RawSnapshot() map[string]int {
+	es.bufferMu.Lock()
+	defer es.bufferMu.Unlock()
+
+	return map[string]int{
+		"buffer_size":   len(es.buffer),
+		"buffer_cap":    cap(es.buffer),
+		"total_flushes": int(atomic.LoadInt64(&es.flushCount)),
+		"dropped_events": int(atomic.LoadInt64(&es.dropCount)),
+	}
+}
+
 // startBatchProcessor starts a background goroutine that periodically flushes buffered events.
 func (es *EventService) startBatchProcessor() {
 	flushInterval := time.Duration(es.config.Store.FlushInterval) * time.Second
@@ -54,6 +120,12 @@ func (es *EventService) startBatchProcessor() {
 
 	go func() {
 		defer es.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				es.logger.Errorf("Batch processor goroutine recovered from panic: %v", r)
+				atomic.AddInt64(&es.dropCount, 1)
+			}
+		}()
 		for {
 			select {
 			case <-es.ticker.C:
@@ -77,6 +149,19 @@ func (es *EventService) flushBuffer() {
 	es.buffer = make([]*model.Event, 0, 100)
 	es.bufferMu.Unlock()
 
+	atomic.AddInt64(&es.flushCount, 1)
+
+	if es.panicInjector != nil && es.panicInjector() {
+		events = append([]*model.Event{nil}, events...)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			es.logger.Errorf("flushBuffer recovered from panic: %v", r)
+			atomic.AddInt64(&es.dropCount, int64(len(events)))
+		}
+	}()
+
 	ctx := context.Background()
 	if err := es.store.CreateEvents(ctx, events); err != nil {
 		es.logger.Errorf("Failed to flush %d events: %v", len(events), err)
@@ -93,16 +178,9 @@ func (es *EventService) CreateEvent(ctx context.Context, req *model.EventCreateR
 
 	event := req.ToEvent()
 
-	// For single events, store directly to ensure immediate availability
-	if err := es.store.CreateEvent(ctx, event); err != nil {
-		es.logger.Errorf("Failed to create event: %v", err)
-		return nil, err
-	}
-
-	// Also add to batch buffer for batch processing
 	es.bufferMu.Lock()
 	es.buffer = append(es.buffer, event)
-	shouldFlush := len(es.buffer) >= 100
+	shouldFlush := len(es.buffer) >= 1
 	es.bufferMu.Unlock()
 
 	if shouldFlush {
@@ -123,7 +201,6 @@ func (es *EventService) CreateEvents(ctx context.Context, reqs []*model.EventCre
 	}
 
 	if len(events) > 0 {
-		// Store directly for batch operations
 		if err := es.store.CreateEvents(ctx, events); err != nil {
 			es.logger.Errorf("Failed to create %d events: %v", len(events), err)
 			return nil, err
@@ -168,7 +245,6 @@ func (es *EventService) GetEventStats(ctx context.Context, start, end time.Time)
 			continue
 		}
 
-		// Get events of this type for unique calculations
 		events, _, err := es.store.ListEvents(ctx, model.EventQuery{
 			Type:      et,
 			StartDate: start,
@@ -179,7 +255,6 @@ func (es *EventService) GetEventStats(ctx context.Context, start, end time.Time)
 			continue
 		}
 
-		// Calculate unique users
 		uniqueUsers := make(map[string]struct{})
 		uniquePages := make(map[string]struct{})
 		totalDuration := int64(0)

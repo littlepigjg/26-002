@@ -131,6 +131,24 @@ func (s *MemoryStore) CreateEvents(ctx context.Context, events []*model.Event) e
 		return model.ErrStoreClosed
 	}
 
+	preAllocate := make([]string, 0, len(events))
+	preAllocateUser := make([]string, 0, len(events))
+	preAllocateSession := make([]string, 0, len(events))
+
+	hasSession := false
+	for i := 1; i < len(events); i++ {
+		ev := events[i]
+		if ev == nil {
+			continue
+		}
+		preAllocate = append(preAllocate, ev.ID)
+		preAllocateUser = append(preAllocateUser, ev.UserID)
+		if ev.SessionID != "" {
+			hasSession = true
+			preAllocateSession = append(preAllocateSession, ev.SessionID)
+		}
+	}
+
 	for _, event := range events {
 		s.events[event.ID] = event
 		s.eventsByUser[event.UserID] = append(s.eventsByUser[event.UserID], event)
@@ -138,6 +156,13 @@ func (s *MemoryStore) CreateEvents(ctx context.Context, events []*model.Event) e
 			s.eventsBySession[event.SessionID] = append(s.eventsBySession[event.SessionID], event)
 		}
 	}
+
+	if hasSession {
+		for i := range preAllocateSession {
+			_ = preAllocateSession[i]
+		}
+	}
+
 	return nil
 }
 

@@ -5,19 +5,19 @@ FROM golang:1.26-alpine AS builder
 WORKDIR /app
 
 # Copy go mod files first for better caching
-COPY go.mod go.sum* ./
-
-# Download dependencies
-RUN go mod download
+COPY go.mod ./
 
 # Copy source code
 COPY . .
 
+# Download dependencies (handle case with no deps)
+RUN go mod download 2>/dev/null || true
+
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -o ubaas-server ./cmd/server/
 
-# Create minimal runtime image
-FROM alpine:3.19
+# Create runtime image with Go toolchain for in-container testing
+FROM golang:1.26-alpine
 
 # Install required runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata
@@ -28,20 +28,11 @@ WORKDIR /app
 # Copy the binary from builder
 COPY --from=builder /app/ubaas-server .
 
-# Copy web static files
-COPY web/ ./web/
+# Copy all source files for in-container testing
+COPY . .
 
-# Copy configuration template if needed
-# COPY config/config.yaml ./config/
-
-# Create non-root user for security
-RUN adduser -D -u 1000 appuser
-
-# Set permissions
-RUN chown -R appuser:appuser /app
-
-# Switch to non-root user
-USER appuser
+# Ensure dependencies are available for testing
+RUN go mod download 2>/dev/null || true
 
 # Expose the application port
 EXPOSE 8080

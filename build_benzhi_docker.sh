@@ -1,12 +1,14 @@
 #!/bin/bash
 # UBAAS Docker Build Script
-# This script builds the Docker image for the UBAAS application.
+# Usage: ./build_benzhi_docker.sh [IMAGE_NAME] [IMAGE_TAG] [PLATFORM]
+# Example: ./build_benzhi_docker.sh exam-system latest linux/amd64
 
 set -e
 
 # Configuration
-IMAGE_NAME="ubaas-server"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_NAME="${1:-ubaas-server}"
+IMAGE_TAG="${2:-latest}"
+PLATFORM="${3:-}"
 DOCKERFILE="${DOCKERFILE:-benzhi.Dockerfile}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 REGISTRY="${REGISTRY:-}"
@@ -50,6 +52,9 @@ log_info "Starting UBAAS Docker image build..."
 log_info "Dockerfile: $DOCKERFILE"
 log_info "Context directory: $CONTEXT_DIR"
 log_info "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+if [ -n "$PLATFORM" ]; then
+    log_info "Platform: $PLATFORM"
+fi
 
 # Check if Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
@@ -58,12 +63,38 @@ if [ ! -f "$DOCKERFILE" ]; then
 fi
 
 # Build the Docker image
-docker build \
-    --file "$DOCKERFILE" \
-    --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
-    --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
-    "$CONTEXT_DIR"
+# For amd64 (native), use simple build
+# For arm64 (cross), use cross-compilation via GOARCH build-arg
+if [ "$PLATFORM" = "linux/amd64" ]; then
+    log_info "Building for native platform: linux/amd64..."
+    docker build \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --build-arg TARGETARCH=amd64 \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+        "$CONTEXT_DIR"
+elif [ "$PLATFORM" = "linux/arm64" ]; then
+    log_info "Cross-compiling for: linux/arm64 using native builder..."
+    # Use native amd64 builder but cross-compile to arm64
+    docker build \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}-arm64:${IMAGE_TAG}" \
+        --build-arg TARGETARCH=arm64 \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+        "$CONTEXT_DIR"
+    # Tag with platform-specific name for identification
+    docker tag "${IMAGE_NAME}-arm64:${IMAGE_TAG}" "${IMAGE_NAME}:${IMAGE_TAG}-arm64"
+else
+    log_info "Building for current platform..."
+    docker build \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+        "$CONTEXT_DIR"
+fi
 
 BUILD_EXIT_CODE=$?
 
@@ -72,7 +103,7 @@ if [ $BUILD_EXIT_CODE -ne 0 ]; then
     exit $BUILD_EXIT_CODE
 fi
 
-log_info "Docker image built successfully: ${IMAGE_NAME}:${IMAGE_TAG}"
+log_info "Docker image built successfully"
 
 # If registry is specified, tag and push
 if [ -n "$REGISTRY" ]; then
@@ -91,12 +122,16 @@ fi
 
 # Show image details
 log_info "Image details:"
-docker images "${IMAGE_NAME}:${IMAGE_TAG}" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}"
+docker images "${IMAGE_NAME}" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null || true
 
 # Instructions for running
 echo ""
 log_info "To run the container, use:"
-echo "  docker run -d -p 8080:8080 ${IMAGE_NAME}:${IMAGE_TAG}"
+if [ "$PLATFORM" = "linux/arm64" ]; then
+    log_info "  docker run -d -p 8080:8080 ${IMAGE_NAME}:${IMAGE_TAG}-arm64  [on arm64 host]"
+else
+    log_info "  docker run -d -p 8080:8080 ${IMAGE_NAME}:${IMAGE_TAG}"
+fi
 echo ""
 log_info "To run with custom configuration:"
 echo "  docker run -d -p 8080:8080 \\"

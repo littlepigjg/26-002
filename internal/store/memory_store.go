@@ -32,6 +32,7 @@ type Store interface {
 	ListSessions(ctx context.Context, query model.SessionQuery) ([]*model.Session, int, error)
 	ActiveSessionCount(ctx context.Context) (int64, error)
 	ExpireSessions(ctx context.Context, before time.Time) (int, error)
+	CleanupExpiredSessions(ctx context.Context, before time.Time) (int, error)
 
 	// Path operations
 	CreatePathSequence(ctx context.Context, path *model.PathSequence) error
@@ -52,6 +53,9 @@ type Store interface {
 	IsOpen() bool
 }
 
+// PanicGuardFn is a function that determines whether to panic on a given error.
+type PanicGuardFn func(sessionID string, op string) bool
+
 // MemoryStore is an in-memory implementation of the Store interface.
 type MemoryStore struct {
 	mu sync.RWMutex
@@ -66,6 +70,12 @@ type MemoryStore struct {
 	eventsBySession map[string][]*model.Event
 	sessionsByUser  map[string][]*model.Session
 	pathsByUser     map[string][]*model.PathSequence
+
+	// Active sessions index for fast lookup of non-expired sessions
+	activeSessions map[string]*model.Session
+
+	// Hook for panic guard
+	panicGuard PanicGuardFn
 
 	isOpen    bool
 	logger    *logger.Logger
@@ -83,10 +93,42 @@ func NewMemoryStore(log *logger.Logger) *MemoryStore {
 		eventsBySession: make(map[string][]*model.Event),
 		sessionsByUser:  make(map[string][]*model.Session),
 		pathsByUser:     make(map[string][]*model.PathSequence),
+		activeSessions:  make(map[string]*model.Session),
 		isOpen:          true,
 		logger:          log,
 		createdAt:       time.Now(),
 	}
+}
+
+// SetPanicGuard sets a function that determines whether to panic on a given operation.
+func (s *MemoryStore) SetPanicGuard(fn PanicGuardFn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.panicGuard = fn
+}
+
+// RawSnapshot returns a raw snapshot of all sessions for diagnostic purposes.
+func (s *MemoryStore) RawSnapshot() map[string]*model.Session {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	snapshot := make(map[string]*model.Session, len(s.sessions))
+	for k, v := range s.sessions {
+		snapshot[k] = v
+	}
+	return snapshot
+}
+
+// ActiveSessionsSnapshot returns a snapshot of the active sessions index.
+func (s *MemoryStore) ActiveSessionsSnapshot() map[string]*model.Session {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	snapshot := make(map[string]*model.Session, len(s.activeSessions))
+	for k, v := range s.activeSessions {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 // Close shuts down the store.

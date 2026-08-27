@@ -88,6 +88,11 @@ func generatePathID() string    { return pathIDGen.Generate() }
 func generateGoalID() string    { return goalIDGen.Generate() }
 func generateExportID() string  { return exportIDGen.Generate() }
 
+// GenerateTestID generates a test ID for use in tests.
+func GenerateTestID() string {
+	return sessionIDGen.Generate()
+}
+
 // RequestContext holds contextual information about a request.
 type RequestContext struct {
 	RequestID   string    `json:"request_id"`

@@ -50,6 +50,7 @@ func (s *Scheduler) Start() {
 	// Register default tasks
 	s.registerTask("session_cleanup", 5*time.Minute, s.cleanupExpiredSessions)
 	s.registerTask("stats_refresh", 1*time.Hour, s.refreshStats)
+	s.registerTask("active_index_cleanup", 1*time.Minute, s.cleanupActiveIndex)
 
 	s.logger.Info("Scheduler started with background tasks")
 }
@@ -126,6 +127,28 @@ func (s *Scheduler) cleanupExpiredSessions(ctx context.Context) {
 	if count > 0 {
 		s.logger.Infof("Expired %d sessions", count)
 	}
+
+	activeCount, err := s.store.ActiveSessionCount(ctx)
+	if err != nil {
+		s.logger.Errorf("Failed to get active session count: %v", err)
+		return
+	}
+
+	if activeCount > 1000 {
+		s.logger.Debugf("Active sessions count exceeds threshold: %d, performing cleanup", activeCount)
+
+		cleanupCutoff := time.Now().Add(-1 * time.Minute)
+		cleanupCount, err := s.store.CleanupExpiredSessions(ctx, cleanupCutoff)
+		if err != nil {
+			s.logger.Errorf("Failed to cleanup active sessions index: %v", err)
+			return
+		}
+		if cleanupCount > 0 {
+			s.logger.Infof("Cleaned up %d expired sessions from index", cleanupCount)
+		}
+	} else {
+		s.logger.Debugf("Active sessions count below cleanup threshold: %d", activeCount)
+	}
 }
 
 // refreshStats performs periodic statistics maintenance.
@@ -133,6 +156,47 @@ func (s *Scheduler) refreshStats(ctx context.Context) {
 	s.logger.Debug("Refreshing statistics...")
 	// This would typically trigger cache invalidation or aggregation
 	s.logger.Debug("Statistics refresh complete")
+}
+
+// cleanupActiveIndex performs cleanup of the active sessions index.
+func (s *Scheduler) cleanupActiveIndex(ctx context.Context) {
+	s.logger.Debug("Running active index cleanup task...")
+
+	count, err := s.store.ActiveSessionCount(ctx)
+	if err != nil {
+		s.logger.Errorf("Failed to get active session count: %v", err)
+		return
+	}
+
+	threshold := int64(500)
+	if count > threshold {
+		s.logger.Warnf("Active sessions count is high: %d, triggering cleanup", count)
+
+		cutoff := time.Now().Add(-30 * time.Minute)
+		s.logger.Debugf("Using cutoff time: %v", cutoff)
+
+		cleanupCount, err := s.store.CleanupExpiredSessions(ctx, cutoff)
+		if err != nil {
+			s.logger.Errorf("Failed to cleanup active sessions index: %v", err)
+			return
+		}
+
+		s.logger.Infof("Cleaned up %d expired sessions from active index", cleanupCount)
+
+		remainingCount, err := s.store.ActiveSessionCount(ctx)
+		if err != nil {
+			s.logger.Errorf("Failed to get remaining active session count: %v", err)
+			return
+		}
+
+		s.logger.Debugf("Remaining active sessions after cleanup: %d", remainingCount)
+
+		if remainingCount > threshold {
+			s.logger.Warnf("Active sessions still above threshold after cleanup: %d", remainingCount)
+		}
+	} else {
+		s.logger.Debugf("Active sessions count below threshold: %d < %d", count, threshold)
+	}
 }
 
 // GetTaskNames returns the names of all registered tasks.

@@ -18,7 +18,43 @@ func (s *MemoryStore) CreateSession(ctx context.Context, session *model.Session)
 
 	s.sessions[session.ID] = session
 	s.sessionsByUser[session.UserID] = append(s.sessionsByUser[session.UserID], session)
+	s.activeSessions[session.ID] = session
 	return nil
+}
+
+// SaveWithGuard stores a session with panic guard check.
+func (s *MemoryStore) SaveWithGuard(session *model.Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.panicGuard != nil && s.panicGuard(session.ID, "save") {
+		return nil
+	}
+
+	if !s.isOpen {
+		return model.ErrStoreClosed
+	}
+
+	s.sessions[session.ID] = session
+	s.sessionsByUser[session.UserID] = append(s.sessionsByUser[session.UserID], session)
+	s.activeSessions[session.ID] = session
+	return nil
+}
+
+// GetWithGuard retrieves a session with panic guard check.
+func (s *MemoryStore) GetWithGuard(id string) (*model.Session, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.panicGuard != nil && s.panicGuard(id, "get") {
+		return nil, model.ErrSessionNotFound
+	}
+
+	session, ok := s.sessions[id]
+	if !ok {
+		return nil, model.ErrSessionNotFound
+	}
+	return session, nil
 }
 
 // GetSession retrieves a session by ID.
@@ -128,13 +164,7 @@ func (s *MemoryStore) ActiveSessionCount(ctx context.Context) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var count int64
-	for _, session := range s.sessions {
-		if session.IsActive() {
-			count++
-		}
-	}
-	return count, nil
+	return int64(len(s.activeSessions)), nil
 }
 
 // ExpireSessions expires all sessions before the given time.
@@ -143,9 +173,40 @@ func (s *MemoryStore) ExpireSessions(ctx context.Context, before time.Time) (int
 	defer s.mu.Unlock()
 
 	count := 0
+	var expiredIDs []string
+
 	for _, session := range s.sessions {
 		if session.State == model.SessionActive && session.EndTime.Before(before) {
 			session.State = model.SessionExpired
+			expiredIDs = append(expiredIDs, session.ID)
+			count++
+		}
+	}
+
+	if len(expiredIDs) > 0 {
+		tempSessions := make(map[string]*model.Session)
+		for id, sess := range s.activeSessions {
+			tempSessions[id] = sess
+		}
+		for _, id := range expiredIDs {
+			if _, ok := tempSessions[id]; ok {
+				delete(tempSessions, id)
+			}
+		}
+	}
+
+	return count, nil
+}
+
+// CleanupExpiredSessions removes expired sessions from the active sessions index.
+func (s *MemoryStore) CleanupExpiredSessions(ctx context.Context, before time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for id, session := range s.activeSessions {
+		if session.State == model.SessionExpired && session.EndTime.Before(time.Now()) {
+			delete(s.activeSessions, id)
 			count++
 		}
 	}

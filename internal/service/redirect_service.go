@@ -52,7 +52,12 @@ func (r *RedirectService) HandleRedirect(ctx context.Context, req *RedirectReque
 		}, model.ErrDisabledURL
 	}
 
-	url.Visits++
+	// Increment the live counter under the store's lock rather than
+	// mutating the (copied) Get result, which would race and never reach
+	// the stored record.
+	if _, err := r.urlStore.IncrementVisits(req.Code); err != nil {
+		return nil, err
+	}
 
 	_ = r.logStore.Write(store.AccessLogEntry{
 		Code:      req.Code,

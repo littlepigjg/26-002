@@ -53,9 +53,10 @@ func (u *URLService) Create(ctx context.Context, req *model.CreateReq) (*model.S
 		return nil, err
 	}
 
-	shortURL.Visits = req.MaxVisits
-
-	return shortURL, nil
+	// Return a copy so callers cannot mutate the stored record through the
+	// returned pointer. Visits stays 0: MaxVisits is a limit, not the
+	// current count, and must never be written back onto the record.
+	return u.store.Get(shortURL.Code)
 }
 
 // Get retrieves a short URL by code.

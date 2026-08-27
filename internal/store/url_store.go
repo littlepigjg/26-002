@@ -34,6 +34,9 @@ func NewURLStore(cfg *config.Config) (*URLStore, error) {
 
 // Load loads the URL store (initialization).
 func (s *URLStore) Load(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loaded = true
@@ -69,7 +72,7 @@ func (s *URLStore) Save(u *model.ShortURL, overwrite bool) error {
 	}
 
 	if _, ok := s.urls[u.Code]; ok {
-		if overwrite {
+		if !overwrite {
 			return model.ErrCodeExists
 		}
 	}
@@ -80,11 +83,16 @@ func (s *URLStore) Save(u *model.ShortURL, overwrite bool) error {
 		}
 	}
 
-	s.urls[u.Code] = u
+	// Store a copy so callers cannot mutate internal state through the
+	// pointer they passed in, and so concurrent Get calls never alias the
+	// same object as the live record.
+	cp := *u
+	s.urls[u.Code] = &cp
 	return nil
 }
 
-// Get retrieves a ShortURL by code.
+// Get retrieves a ShortURL by code. The returned value is a copy of the
+// stored record, so callers cannot mutate the live store entry through it.
 func (s *URLStore) Get(code string) (*model.ShortURL, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -93,7 +101,23 @@ func (s *URLStore) Get(code string) (*model.ShortURL, error) {
 	if !ok {
 		return nil, model.ErrCodeNotFound
 	}
-	return u, nil
+	cp := *u
+	return &cp, nil
+}
+
+// IncrementVisits atomically increments the visit count for a stored
+// ShortURL and returns the updated value. It returns ErrCodeNotFound if
+// no record exists for the code.
+func (s *URLStore) IncrementVisits(code string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, ok := s.urls[code]
+	if !ok {
+		return 0, model.ErrCodeNotFound
+	}
+	u.Visits++
+	return u.Visits, nil
 }
 
 // RawSnapshot returns a raw snapshot of all stored URLs.

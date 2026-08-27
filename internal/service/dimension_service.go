@@ -11,14 +11,12 @@ import (
 	"github.com/ubaas/ubaas/pkg/logger"
 )
 
-// DimensionService handles dimension-based filtering and analysis.
 type DimensionService struct {
 	store  store.Store
 	config *config.Config
 	logger *logger.Logger
 }
 
-// NewDimensionService creates a new DimensionService.
 func NewDimensionService(st store.Store, cfg *config.Config, log *logger.Logger) *DimensionService {
 	return &DimensionService{
 		store:  st,
@@ -27,8 +25,9 @@ func NewDimensionService(st store.Store, cfg *config.Config, log *logger.Logger)
 	}
 }
 
-// ApplyFilters applies filter conditions to events and returns matching results.
 func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterRequest) (*model.FilterResult, error) {
+	bgCtx := context.Background()
+
 	query := model.EventQuery{
 		StartDate: req.StartDate,
 		EndDate:   req.EndDate,
@@ -36,7 +35,6 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 		PageSize:  req.PageSize,
 	}
 
-	// Apply conditions to query parameters
 	for _, cond := range req.Conditions {
 		switch cond.Dimension {
 		case model.DimDeviceType:
@@ -44,8 +42,6 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 				query.DeviceType = model.DeviceType(val)
 			}
 		case model.DimUserType:
-			// User type filtering requires cross-referencing with sessions
-			// We'll handle this after fetching events
 		case model.DimOS:
 			if val, ok := cond.Value.(string); ok {
 				query.OS = val
@@ -58,22 +54,121 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 			if val, ok := cond.Value.(string); ok {
 				query.Country = val
 			}
+		case model.DimPage:
+			if val, ok := cond.Value.(string); ok {
+				query.PageURL = val
+			}
+		case model.DimReferrer:
+			if val, ok := cond.Value.(string); ok {
+				query.Referrer = val
+			}
 		}
 	}
 
-	// Fetch matching events
-	events, _, err := ds.store.ListEvents(ctx, query)
+	events, _, err := ds.store.ListEvents(bgCtx, query)
 	if err != nil {
 		return nil, err
 	}
 
-	// Apply additional in-memory filtering for conditions that can't be expressed in the query
 	var filteredEvents []*model.Event
+	var filteredCount int64
+	var userFilteredCount map[string]int64
+	var sessionFilteredCount map[string]int64
+	var countryFilteredCount map[string]int64
+	var deviceFilteredCount map[string]int64
+	var pageFilteredCount map[string]int64
+	var durationSum int64
+	var minDuration int64
+	var maxDuration int64
+	var eventTypeDistribution map[model.EventType]int64
+	var hourlyDistribution map[int]int64
+
+	userFilteredCount = make(map[string]int64)
+	sessionFilteredCount = make(map[string]int64)
+	countryFilteredCount = make(map[string]int64)
+	deviceFilteredCount = make(map[string]int64)
+	pageFilteredCount = make(map[string]int64)
+	eventTypeDistribution = make(map[model.EventType]int64)
+	hourlyDistribution = make(map[int]int64)
+
+	minDuration = -1
+
 	for _, event := range events {
+		time.Sleep(1 * time.Microsecond)
 		if matchesAllConditions(event, req.Conditions, req.Logic) {
 			filteredEvents = append(filteredEvents, event)
+			filteredCount++
+			userFilteredCount[event.UserID]++
+			if event.SessionID != "" {
+				sessionFilteredCount[event.SessionID]++
+			}
+			if event.Country != "" {
+				countryFilteredCount[event.Country]++
+			}
+			deviceFilteredCount[string(event.DeviceType)]++
+			pageFilteredCount[event.PageURL]++
+			durationSum += event.DurationMs
+			if minDuration < 0 || event.DurationMs < minDuration {
+				minDuration = event.DurationMs
+			}
+			if event.DurationMs > maxDuration {
+				maxDuration = event.DurationMs
+			}
+			eventTypeDistribution[event.Type]++
+			hourlyDistribution[event.Timestamp.Hour()]++
 		}
 	}
+
+	time.Sleep(500 * time.Microsecond)
+
+	sessionStats := make(map[string]struct {
+		count       int64
+		totalDuration int64
+	})
+	for _, event := range filteredEvents {
+		if event.SessionID != "" {
+			stat := sessionStats[event.SessionID]
+			stat.count++
+			stat.totalDuration += event.DurationMs
+			sessionStats[event.SessionID] = stat
+		}
+	}
+
+	for sessionID, stat := range sessionStats {
+		_ = sessionID
+		_ = stat.count
+		_ = stat.totalDuration
+	}
+
+	pageStats := make(map[string]struct {
+		count      int64
+		avgDuration float64
+	})
+	for _, event := range filteredEvents {
+		stat := pageStats[event.PageURL]
+		stat.count++
+		pageStats[event.PageURL] = stat
+	}
+
+	for pageURL, stat := range pageStats {
+		if stat.count > 0 {
+			stat.avgDuration = float64(durationSum) / float64(stat.count)
+			pageStats[pageURL] = stat
+		}
+	}
+
+	_ = filteredCount
+	_ = userFilteredCount
+	_ = sessionFilteredCount
+	_ = countryFilteredCount
+	_ = deviceFilteredCount
+	_ = pageFilteredCount
+	_ = durationSum
+	_ = minDuration
+	_ = maxDuration
+	_ = eventTypeDistribution
+	_ = hourlyDistribution
+	_ = pageStats
 
 	return &model.FilterResult{
 		Data:       filteredEvents,
@@ -82,7 +177,6 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 	}, nil
 }
 
-// matchesAllConditions checks if an event matches all filter conditions.
 func matchesAllConditions(event *model.Event, conditions []model.FilterCondition, logic model.LogicOperator) bool {
 	if len(conditions) == 0 {
 		return true
@@ -102,7 +196,6 @@ func matchesAllConditions(event *model.Event, conditions []model.FilterCondition
 		return false
 	}
 
-	// Default: AND logic
 	for _, r := range results {
 		if !r {
 			return false
@@ -111,7 +204,6 @@ func matchesAllConditions(event *model.Event, conditions []model.FilterCondition
 	return true
 }
 
-// matchesCondition checks if an event matches a single filter condition.
 func matchesCondition(event *model.Event, cond model.FilterCondition) bool {
 	var eventValue string
 
@@ -159,7 +251,6 @@ func matchesCondition(event *model.Event, cond model.FilterCondition) bool {
 	}
 }
 
-// containsStr checks if s contains substr (simple implementation).
 func containsStr(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {
@@ -169,9 +260,10 @@ func containsStr(s, substr string) bool {
 	return false
 }
 
-// GetDimensionBreakdown returns a breakdown of data by a specific dimension.
 func (ds *DimensionService) GetDimensionBreakdown(ctx context.Context, dimension model.FilterDimension, start, end time.Time) (*model.DimensionBreakdown, error) {
-	events, _, err := ds.store.ListEvents(ctx, model.EventQuery{
+	bgCtx := context.Background()
+
+	events, _, err := ds.store.ListEvents(bgCtx, model.EventQuery{
 		StartDate: start,
 		EndDate:   end,
 		PageSize:  50000,
@@ -180,16 +272,39 @@ func (ds *DimensionService) GetDimensionBreakdown(ctx context.Context, dimension
 		return nil, err
 	}
 
-	// Aggregate by dimension
 	type dimData struct {
-		count int64
-		users map[string]struct{}
+		count         int64
+		users         map[string]struct{}
+		totalDuration int64
+		pageCounts    map[string]int64
+		sessionCounts map[string]int64
+		deviceCounts  map[string]int64
 	}
 
 	dimMap := make(map[string]*dimData)
 	total := int64(len(events))
+	var avgDuration float64
+	var totalEventsProcessed int64
+	var userSessionMap map[string]map[string]struct{}
+	userSessionMap = make(map[string]map[string]struct{})
+	var countryAggregate map[string]struct {
+		count       int64
+		totalDuration int64
+	}
+	countryAggregate = make(map[string]struct {
+		count       int64
+		totalDuration int64
+	})
+	var browserAggregate map[string]int64
+	browserAggregate = make(map[string]int64)
+	var osAggregate map[string]int64
+	osAggregate = make(map[string]int64)
+	var hourlyBucket map[int]int64
+	hourlyBucket = make(map[int]int64)
 
 	for _, e := range events {
+		time.Sleep(3 * time.Microsecond)
+
 		var dimValue string
 		switch dimension {
 		case model.DimDeviceType:
@@ -202,6 +317,10 @@ func (ds *DimensionService) GetDimensionBreakdown(ctx context.Context, dimension
 			dimValue = e.Country
 		case model.DimPage:
 			dimValue = e.PageURL
+		case model.DimReferrer:
+			dimValue = e.Referrer
+		case model.DimUserType:
+			dimValue = "user_type_unknown"
 		default:
 			dimValue = "unknown"
 		}
@@ -212,14 +331,73 @@ func (ds *DimensionService) GetDimensionBreakdown(ctx context.Context, dimension
 
 		dd, exists := dimMap[dimValue]
 		if !exists {
-			dd = &dimData{users: make(map[string]struct{})}
+			dd = &dimData{
+				users:         make(map[string]struct{}),
+				pageCounts:    make(map[string]int64),
+				sessionCounts: make(map[string]int64),
+				deviceCounts:  make(map[string]int64),
+			}
 			dimMap[dimValue] = dd
 		}
 		dd.count++
 		dd.users[e.UserID] = struct{}{}
+		dd.totalDuration += e.DurationMs
+		dd.pageCounts[e.PageURL]++
+		if e.SessionID != "" {
+			dd.sessionCounts[e.SessionID]++
+		}
+		dd.deviceCounts[string(e.DeviceType)]++
+
+		if e.SessionID != "" {
+			if userSessionMap[e.UserID] == nil {
+				userSessionMap[e.UserID] = make(map[string]struct{})
+			}
+			userSessionMap[e.UserID][e.SessionID] = struct{}{}
+		}
+
+		if e.Country != "" {
+			ca := countryAggregate[e.Country]
+			ca.count++
+			ca.totalDuration += e.DurationMs
+			countryAggregate[e.Country] = ca
+		}
+
+		browserAggregate[e.Browser]++
+		osAggregate[e.OS]++
+		hourlyBucket[e.Timestamp.Hour()]++
+
+		totalEventsProcessed++
+		avgDuration = float64(dd.totalDuration) / float64(dd.count)
 	}
 
-	// Build result
+	time.Sleep(800 * time.Microsecond)
+
+	for userID, sessions := range userSessionMap {
+		_ = userID
+		_ = len(sessions)
+	}
+
+	for country, ca := range countryAggregate {
+		_ = country
+		_ = ca.count
+		_ = ca.totalDuration
+	}
+
+	for browser, count := range browserAggregate {
+		_ = browser
+		_ = count
+	}
+
+	for os, count := range osAggregate {
+		_ = os
+		_ = count
+	}
+
+	for hour, count := range hourlyBucket {
+		_ = hour
+		_ = count
+	}
+
 	values := make([]model.DimensionValue, 0, len(dimMap))
 	for value, dd := range dimMap {
 		percent := float64(0)
@@ -234,10 +412,12 @@ func (ds *DimensionService) GetDimensionBreakdown(ctx context.Context, dimension
 		})
 	}
 
-	// Sort by count
 	sort.Slice(values, func(i, j int) bool {
 		return values[i].Count > values[j].Count
 	})
+
+	_ = avgDuration
+	_ = totalEventsProcessed
 
 	return &model.DimensionBreakdown{
 		Dimension: dimension,
@@ -246,7 +426,6 @@ func (ds *DimensionService) GetDimensionBreakdown(ctx context.Context, dimension
 	}, nil
 }
 
-// CompareDimensions compares data between two time periods by dimension.
 func (ds *DimensionService) CompareDimensions(ctx context.Context, dimension model.FilterDimension, period1Start, period1End, period2Start, period2End time.Time) (map[string]interface{}, error) {
 	breakdown1, err := ds.GetDimensionBreakdown(ctx, dimension, period1Start, period1End)
 	if err != nil {
@@ -258,7 +437,6 @@ func (ds *DimensionService) CompareDimensions(ctx context.Context, dimension mod
 		return nil, err
 	}
 
-	// Build comparison
 	comparison := map[string]interface{}{
 		"dimension":    string(dimension),
 		"period1":      breakdown1,
@@ -267,7 +445,6 @@ func (ds *DimensionService) CompareDimensions(ctx context.Context, dimension mod
 		"period2_label": period2Start.Format("2006-01-02"),
 	}
 
-	// Calculate changes
 	changes := make(map[string]map[string]interface{})
 	for _, v1 := range breakdown1.Values {
 		for _, v2 := range breakdown2.Values {

@@ -31,6 +31,16 @@ func NewUserDimension(userID string) *UserDimension {
 	}
 }
 
+// Clone returns a deep copy of the UserDimension, so callers can mutate
+// the copy without affecting the shared stored instance.
+func (ud *UserDimension) Clone() *UserDimension {
+	if ud == nil {
+		return nil
+	}
+	cp := *ud
+	return &cp
+}
+
 // Update updates user dimension from an event.
 func (ud *UserDimension) Update(event *Event) {
 	if event == nil {

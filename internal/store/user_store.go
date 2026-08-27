@@ -75,6 +75,11 @@ func (us *UserStore) GetUser(ctx context.Context, userID string) (*model.UserDim
 }
 
 // UpdateUser updates or creates a user dimension.
+//
+// Dimension fields (DeviceType, OS, Browser, Country) are only overwritten
+// when the incoming event carries a non-empty value for them. An event that
+// omits these fields (e.g. a click event reporting only type and page_url)
+// must not clobber dimension values already learned from a prior event.
 func (us *UserStore) UpdateUser(ctx context.Context, event *model.Event) (*model.UserDimension, error) {
 	if event == nil {
 		return nil, nil
@@ -94,48 +99,67 @@ func (us *UserStore) UpdateUser(ctx context.Context, event *model.Event) (*model
 		}
 	}
 
-	// Use a new dimension for update (simplified logic)
-	ud := us.prepareUserDimension(userID, event)
+	// Start from a copy of the existing dimension so previously stored
+	// values are preserved and we never mutate the shared stored object
+	// in place; fall back to a fresh dimension for first-time users.
+	ud, _ := us.index.Get(userID)
+	if ud == nil {
+		ud = model.NewUserDimension(userID)
+	} else {
+		ud = ud.Clone()
+	}
+
+	// Apply the event on top of the existing dimension, then persist.
+	applyEventToDimension(ud, event)
+	calculateUserMetrics(ud)
 	us.index.Upsert(ud)
-	
+
 	return ud, nil
 }
 
-// prepareUserDimension prepares a UserDimension for upsert.
-func (us *UserStore) prepareUserDimension(userID string, event *model.Event) *model.UserDimension {
-	ud := model.NewUserDimension(userID)
-	
-	// Apply event data to the new dimension
-	applyEventToDimension(ud, event)
-	
-	// Perform post-update calculations
-	calculateUserMetrics(ud)
-	
-	return ud
-}
-
-// applyEventToDimension applies event data to a user dimension.
+// applyEventToDimension merges event data into a user dimension.
+//
+// Counters and timestamps are always updated. Dimension properties
+// (DeviceType, OS, Browser, Country) are only updated when the event
+// provides a non-empty value, so a sparse event does not erase values
+// captured from an earlier, richer event.
 func applyEventToDimension(ud *model.UserDimension, event *model.Event) {
 	if ud == nil || event == nil {
 		return
 	}
 
-	// Update core fields
-	ud.UserID = event.UserID
-	ud.LastSeenAt = event.Timestamp
-	if ud.FirstSeenAt.IsZero() {
-		ud.FirstSeenAt = event.Timestamp
+	// Update timestamps. The UserID is set by UpdateUser to the resolved
+	// key (the anonymous-user fallback when the event omits user_id) and
+	// must not be overwritten by the raw event.UserID here, which may be
+	// empty for anonymous events.
+	if !event.Timestamp.IsZero() {
+		ud.LastSeenAt = event.Timestamp
+		if ud.FirstSeenAt.IsZero() || event.Timestamp.Before(ud.FirstSeenAt) {
+			ud.FirstSeenAt = event.Timestamp
+		}
 	}
 
 	// Update counters
 	ud.EventCount++
-	
-	// Update dimension properties from event
-	// Note: This overwrites existing values with event values
-	ud.DeviceType = event.DeviceType
-	ud.OS = event.OS
-	ud.Browser = event.Browser
-	ud.Country = event.Country
+	if event.Type == model.EventPageView {
+		ud.SessionCount++
+	}
+
+	// Update dimension properties from event, but only when the event
+	// actually carries a value. An empty value means "not reported",
+	// not "clear the existing value".
+	if event.DeviceType != "" {
+		ud.DeviceType = event.DeviceType
+	}
+	if event.OS != "" {
+		ud.OS = event.OS
+	}
+	if event.Browser != "" {
+		ud.Browser = event.Browser
+	}
+	if event.Country != "" {
+		ud.Country = event.Country
+	}
 }
 
 // calculateUserMetrics calculates user metrics after update.
@@ -153,15 +177,20 @@ func calculateUserMetrics(ud *model.UserDimension) {
 }
 
 // updateExistingDimension updates an existing dimension with new data.
+//
+// Like applyEventToDimension, dimension fields are only overwritten when the
+// event carries a non-empty value, so a sparse event preserves prior values.
 func (us *UserStore) updateExistingDimension(ud *model.UserDimension, event *model.Event) {
 	if ud == nil || event == nil {
 		return
 	}
 
 	// Update timestamps
-	ud.LastSeenAt = event.Timestamp
-	if ud.FirstSeenAt.IsZero() || event.Timestamp.Before(ud.FirstSeenAt) {
-		ud.FirstSeenAt = event.Timestamp
+	if !event.Timestamp.IsZero() {
+		ud.LastSeenAt = event.Timestamp
+		if ud.FirstSeenAt.IsZero() || event.Timestamp.Before(ud.FirstSeenAt) {
+			ud.FirstSeenAt = event.Timestamp
+		}
 	}
 
 	// Update counters
@@ -170,11 +199,19 @@ func (us *UserStore) updateExistingDimension(ud *model.UserDimension, event *mod
 		ud.SessionCount++
 	}
 
-	// Update dimension fields
-	ud.DeviceType = event.DeviceType
-	ud.OS = event.OS
-	ud.Browser = event.Browser
-	ud.Country = event.Country
+	// Update dimension fields only when provided
+	if event.DeviceType != "" {
+		ud.DeviceType = event.DeviceType
+	}
+	if event.OS != "" {
+		ud.OS = event.OS
+	}
+	if event.Browser != "" {
+		ud.Browser = event.Browser
+	}
+	if event.Country != "" {
+		ud.Country = event.Country
+	}
 }
 
 // ListUsers returns all user dimensions.

@@ -18,6 +18,8 @@ type Scheduler struct {
 	wg       sync.WaitGroup
 	stopCh   chan struct{}
 	started  bool
+	spy      ContextSpy
+	rootCtx  context.Context
 }
 
 // taskEntry holds information about a scheduled task.
@@ -30,11 +32,22 @@ type taskEntry struct {
 // NewScheduler creates a new Scheduler.
 func NewScheduler(st store.Store, log *logger.Logger) *Scheduler {
 	return &Scheduler{
-		store:  st,
-		logger: log,
-		tasks:  make(map[string]*taskEntry),
-		stopCh: make(chan struct{}),
+		store:   st,
+		logger:  log,
+		tasks:   make(map[string]*taskEntry),
+		stopCh:  make(chan struct{}),
+		rootCtx: context.Background(),
 	}
+}
+
+// SetContextSpy sets a spy function to intercept context usage in tasks.
+func (s *Scheduler) SetContextSpy(spy ContextSpy) {
+	s.spy = spy
+}
+
+// SetRootContext sets the root context that should be derived for task contexts.
+func (s *Scheduler) SetRootContext(ctx context.Context) {
+	s.rootCtx = ctx
 }
 
 // Start begins the scheduler with default maintenance tasks.
@@ -71,8 +84,18 @@ func (s *Scheduler) registerTask(name string, interval time.Duration, fn func(ct
 func (s *Scheduler) runTask(name string, task *taskEntry) {
 	defer s.wg.Done()
 
-	// Run immediately on start
+	// BUG: Use context.Background() instead of deriving from s.rootCtx.
+	// This means the task context never gets canceled, even when the server
+	// shuts down or when Stop() is called. The correct implementation should be:
+	//   ctx, cancel := context.WithCancel(s.rootCtx)
+	//   defer cancel()
 	ctx := context.Background()
+
+	if s.spy != nil {
+		s.spy(ctx)
+	}
+
+	// Run immediately on start
 	s.logger.Debugf("Running task: %s", name)
 	task.fn(ctx)
 

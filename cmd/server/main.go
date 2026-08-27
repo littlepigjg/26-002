@@ -38,6 +38,10 @@ func main() {
 	memStore := store.NewMemoryStore(log)
 	defer memStore.Close()
 
+	// Create server lifecycle context
+	serverCtx, serverCancel := context.WithCancel(context.Background())
+	defer serverCancel()
+
 	// Initialize services
 	eventSvc := service.NewEventService(memStore, cfg, log)
 	sessionSvc := service.NewSessionService(memStore, cfg, log)
@@ -47,6 +51,10 @@ func main() {
 	dimSvc := service.NewDimensionService(memStore, cfg, log)
 	exportSvc := service.NewExportService(memStore, cfg, log)
 	scheduler := service.NewScheduler(memStore, log)
+
+	// Propagate server context to background services
+	exportSvc.SetRootContext(serverCtx)
+	scheduler.SetRootContext(serverCtx)
 
 	// Start background tasks
 	scheduler.Start()
@@ -122,9 +130,13 @@ func main() {
 		time.Duration(cfg.Server.ShutdownTimeout)*time.Second)
 	defer cancel()
 
+	// Cancel server context to signal background tasks
+	serverCancel()
+
 	// Stop background services first
 	scheduler.Stop()
 	eventSvc.Stop()
+	exportSvc.Shutdown(shutdownCtx)
 
 	// Shutdown HTTP server
 	if err := server.Shutdown(shutdownCtx); err != nil {

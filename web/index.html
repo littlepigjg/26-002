@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UBAAS - User Behavior Analytics</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <div class="container">
+                <h1>UBAAS</h1>
+                <nav>
+                    <a href="#dashboard" class="nav-link active" data-view="dashboard">Dashboard</a>
+                    <a href="#events" class="nav-link" data-view="events">Events</a>
+                    <a href="#sessions" class="nav-link" data-view="sessions">Sessions</a>
+                    <a href="#paths" class="nav-link" data-view="paths">Paths</a>
+                    <a href="#conversions" class="nav-link" data-view="conversions">Conversions</a>
+                    <a href="#analytics" class="nav-link" data-view="analytics">Analytics</a>
+                    <a href="#ingest" class="nav-link" data-view="ingest">Test Ingest</a>
+                </nav>
+            </div>
+        </header>
+
+        <main class="container">
+            <!-- Dashboard View -->
+            <section id="view-dashboard" class="view active">
+                <h2>Dashboard Overview</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Active Sessions</h3>
+                        <div class="stat-value" id="stat-active-sessions">--</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Total Events</h3>
+                        <div class="stat-value" id="stat-total-events">--</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Today's Events</h3>
+                        <div class="stat-value" id="stat-today-events">--</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Unique Users</h3>
+                        <div class="stat-value" id="stat-unique-users">--</div>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <h3>Event Breakdown</h3>
+                    <div id="event-breakdown" class="breakdown-list">Loading...</div>
+                </div>
+            </section>
+
+            <!-- Events View -->
+            <section id="view-events" class="view">
+                <h2>Event List</h2>
+                <div class="filters">
+                    <input type="text" id="filter-user-id" placeholder="User ID">
+                    <select id="filter-event-type">
+                        <option value="">All Types</option>
+                        <option value="page_view">Page View</option>
+                        <option value="click">Click</option>
+                        <option value="duration">Duration</option>
+                        <option value="conversion">Conversion</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                    <button id="btn-search-events">Search</button>
+                </div>
+                <table id="events-table" class="data-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>User</th>
+                            <th>Type</th>
+                            <th>Page</th>
+                            <th>Device</th>
+                            <th>Timestamp</th>
+                        </tr>
+                    </thead>
+                    <tbody id="events-body">
+                        <tr><td colspan="6">Loading...</td></tr>
+                    </tbody>
+                </table>
+                <div class="pagination">
+                    <button id="btn-prev-events">Previous</button>
+                    <span id="events-page-info">Page 1</span>
+                    <button id="btn-next-events">Next</button>
+                </div>
+            </section>
+
+            <!-- Sessions View -->
+            <section id="view-sessions" class="view">
+                <h2>Session List</h2>
+                <div class="filters">
+                    <select id="filter-session-state">
+                        <option value="">All States</option>
+                        <option value="active">Active</option>
+                        <option value="expired">Expired</option>
+                        <option value="closed">Closed</option>
+                    </select>
+                    <button id="btn-search-sessions">Search</button>
+                </div>
+                <table id="sessions-table" class="data-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>User</th>
+                            <th>State</th>
+                            <th>Device</th>
+                            <th>Events</th>
+                            <th>Start</th>
+                            <th>End</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sessions-body">
+                        <tr><td colspan="7">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Paths View -->
+            <section id="view-paths" class="view">
+                <h2>Path Analysis</h2>
+                <div class="path-controls">
+                    <h3>Hot Paths</h3>
+                    <div id="hot-paths" class="hot-paths-list">Loading...</div>
+                </div>
+                <div class="path-controls">
+                    <h3>Popular Pages</h3>
+                    <div id="popular-pages" class="popular-pages-list">Loading...</div>
+                </div>
+            </section>
+
+            <!-- Conversions View -->
+            <section id="view-conversions" class="view">
+                <h2>Conversion Analysis</h2>
+                <div class="conversion-controls">
+                    <div class="form-group">
+                        <label>Start Page:</label>
+                        <input type="text" id="conv-start-page" placeholder="/home">
+                    </div>
+                    <div class="form-group">
+                        <label>End Page:</label>
+                        <input type="text" id="conv-end-page" placeholder="/checkout">
+                    </div>
+                    <button id="btn-calc-conversion">Calculate</button>
+                </div>
+                <div id="conversion-result" class="conversion-result"></div>
+
+                <h3>Conversion Goals</h3>
+                <div class="form-group">
+                    <input type="text" id="goal-name" placeholder="Goal Name">
+                    <input type="text" id="goal-start" placeholder="Start Page">
+                    <input type="text" id="goal-end" placeholder="End Page">
+                    <button id="btn-create-goal">Create Goal</button>
+                </div>
+                <div id="goals-list" class="goals-list">Loading...</div>
+            </section>
+
+            <!-- Analytics View -->
+            <section id="view-analytics" class="view">
+                <h2>Analytics</h2>
+                <div class="analytics-grid">
+                    <div class="analytics-card">
+                        <h3>Device Breakdown</h3>
+                        <div id="device-breakdown">Loading...</div>
+                    </div>
+                    <div class="analytics-card">
+                        <h3>Hourly Distribution</h3>
+                        <div id="hourly-dist">Loading...</div>
+                    </div>
+                    <div class="analytics-card">
+                        <h3>Country Breakdown</h3>
+                        <div id="country-breakdown">Loading...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Test Ingest View -->
+            <section id="view-ingest" class="view">
+                <h2>Test Event Ingestion</h2>
+                <div class="ingest-form">
+                    <div class="form-group">
+                        <label>User ID:</label>
+                        <input type="text" id="ingest-user-id" value="test-user-001">
+                    </div>
+                    <div class="form-group">
+                        <label>Event Type:</label>
+                        <select id="ingest-event-type">
+                            <option value="page_view">Page View</option>
+                            <option value="click">Click</option>
+                            <option value="duration">Duration</option>
+                            <option value="conversion">Conversion</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Page URL:</label>
+                        <input type="text" id="ingest-page-url" value="/home">
+                    </div>
+                    <div class="form-group">
+                        <label>Device Type:</label>
+                        <select id="ingest-device-type">
+                            <option value="desktop">Desktop</option>
+                            <option value="mobile">Mobile</option>
+                            <option value="tablet">Tablet</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Duration (ms):</label>
+                        <input type="number" id="ingest-duration" value="5000">
+                    </div>
+                    <button id="btn-send-event">Send Event</button>
+                    <button id="btn-send-batch">Send Batch (50)</button>
+                </div>
+                <div id="ingest-result" class="ingest-result"></div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <div class="container">
+                <p>UBAAS - User Behavior Analytics as a Service</p>
+                <p>API Endpoint: <a href="/api/events">/api/events</a></p>
+            </div>
+        </footer>
+    </div>
+    <script src="/js/app.js"></script>
+</body>
+</html>

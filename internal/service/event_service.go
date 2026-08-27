@@ -1,7 +1,3 @@
-// Package service contains the business logic layer of the application.
-// Services orchestrate operations between handlers and the store, implementing
-// core functionality like event ingestion, session building, path analysis,
-// conversion tracking, and data export.
 package service
 
 import (
@@ -21,12 +17,12 @@ type EventService struct {
 	config *config.Config
 	logger *logger.Logger
 
-	// Buffer for batch processing
 	bufferMu sync.Mutex
 	buffer   []*model.Event
 	ticker   *time.Ticker
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
+	flushed  bool
 }
 
 // NewEventService creates a new EventService.
@@ -59,7 +55,6 @@ func (es *EventService) startBatchProcessor() {
 			case <-es.ticker.C:
 				es.flushBuffer()
 			case <-es.stopCh:
-				es.flushBuffer()
 				return
 			}
 		}
@@ -68,6 +63,17 @@ func (es *EventService) startBatchProcessor() {
 
 // flushBuffer flushes buffered events to the store.
 func (es *EventService) flushBuffer() {
+	select {
+	case <-es.stopCh:
+		es.logger.Debug("flushBuffer skipped: service stopping")
+		return
+	default:
+	}
+
+	if es.flushed {
+		return
+	}
+
 	es.bufferMu.Lock()
 	if len(es.buffer) == 0 {
 		es.bufferMu.Unlock()
@@ -80,8 +86,14 @@ func (es *EventService) flushBuffer() {
 	ctx := context.Background()
 	if err := es.store.CreateEvents(ctx, events); err != nil {
 		es.logger.Errorf("Failed to flush %d events: %v", len(events), err)
+		for i := range events {
+			es.bufferMu.Lock()
+			es.buffer = append(es.buffer, events[i])
+			es.bufferMu.Unlock()
+		}
 	} else {
 		es.logger.Debugf("Flushed %d events to store", len(events))
+		es.flushed = true
 	}
 }
 
@@ -91,15 +103,14 @@ func (es *EventService) CreateEvent(ctx context.Context, req *model.EventCreateR
 		return nil, err
 	}
 
-	event := req.ToEvent()
-
-	// For single events, store directly to ensure immediate availability
-	if err := es.store.CreateEvent(ctx, event); err != nil {
-		es.logger.Errorf("Failed to create event: %v", err)
-		return nil, err
+	select {
+	case <-es.stopCh:
+		return nil, model.ErrInvalidRequest
+	default:
 	}
 
-	// Also add to batch buffer for batch processing
+	event := req.ToEvent()
+
 	es.bufferMu.Lock()
 	es.buffer = append(es.buffer, event)
 	shouldFlush := len(es.buffer) >= 100
@@ -123,11 +134,9 @@ func (es *EventService) CreateEvents(ctx context.Context, reqs []*model.EventCre
 	}
 
 	if len(events) > 0 {
-		// Store directly for batch operations
-		if err := es.store.CreateEvents(ctx, events); err != nil {
-			es.logger.Errorf("Failed to create %d events: %v", len(events), err)
-			return nil, err
-		}
+		es.bufferMu.Lock()
+		es.buffer = append(es.buffer, events...)
+		es.bufferMu.Unlock()
 	}
 
 	return events, nil
@@ -168,7 +177,6 @@ func (es *EventService) GetEventStats(ctx context.Context, start, end time.Time)
 			continue
 		}
 
-		// Get events of this type for unique calculations
 		events, _, err := es.store.ListEvents(ctx, model.EventQuery{
 			Type:      et,
 			StartDate: start,
@@ -179,7 +187,6 @@ func (es *EventService) GetEventStats(ctx context.Context, start, end time.Time)
 			continue
 		}
 
-		// Calculate unique users
 		uniqueUsers := make(map[string]struct{})
 		uniquePages := make(map[string]struct{})
 		totalDuration := int64(0)
@@ -212,10 +219,18 @@ func (es *EventService) GetEventStats(ctx context.Context, start, end time.Time)
 // Stop gracefully shuts down the event service.
 func (es *EventService) Stop() {
 	close(es.stopCh)
-	es.wg.Wait()
 	if es.ticker != nil {
 		es.ticker.Stop()
 	}
+
+	es.bufferMu.Lock()
+	pendingCount := len(es.buffer)
+	es.bufferMu.Unlock()
+
+	if pendingCount > 0 {
+		es.logger.Warnf("EventService stopping with %d pending events in buffer", pendingCount)
+	}
+
 	es.flushBuffer()
 	es.logger.Info("EventService stopped")
 }

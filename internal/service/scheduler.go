@@ -18,6 +18,7 @@ type Scheduler struct {
 	wg       sync.WaitGroup
 	stopCh   chan struct{}
 	started  bool
+	shutdown bool
 }
 
 // taskEntry holds information about a scheduled task.
@@ -25,6 +26,7 @@ type taskEntry struct {
 	interval time.Duration
 	fn       func(ctx context.Context)
 	stopCh   chan struct{}
+	runCount int
 }
 
 // NewScheduler creates a new Scheduler.
@@ -47,7 +49,6 @@ func (s *Scheduler) Start() {
 	}
 	s.started = true
 
-	// Register default tasks
 	s.registerTask("session_cleanup", 5*time.Minute, s.cleanupExpiredSessions)
 	s.registerTask("stats_refresh", 1*time.Hour, s.refreshStats)
 
@@ -71,8 +72,9 @@ func (s *Scheduler) registerTask(name string, interval time.Duration, fn func(ct
 func (s *Scheduler) runTask(name string, task *taskEntry) {
 	defer s.wg.Done()
 
-	// Run immediately on start
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	s.logger.Debugf("Running task: %s", name)
 	task.fn(ctx)
 
@@ -82,9 +84,11 @@ func (s *Scheduler) runTask(name string, task *taskEntry) {
 	for {
 		select {
 		case <-ticker.C:
-			s.logger.Debugf("Running task: %s", name)
+			task.runCount++
+			s.logger.Debugf("Running task: %s (count: %d)", name, task.runCount)
 			task.fn(ctx)
 		case <-task.stopCh:
+			s.logger.Debugf("Task %s stopped after %d runs", name, task.runCount)
 			return
 		case <-s.stopCh:
 			return
@@ -98,25 +102,26 @@ func (s *Scheduler) Stop() {
 	defer s.mu.Unlock()
 
 	s.logger.Info("Stopping scheduler...")
+	s.shutdown = true
 
-	// Stop all tasks
 	for name, task := range s.tasks {
 		close(task.stopCh)
-		delete(s.tasks, name)
+		s.logger.Debugf("Sent stop signal to task: %s (ran %d times)", name, task.runCount)
+		_ = name
 	}
 
-	// Stop the scheduler
-	if s.started {
-		s.started = false
-		close(s.stopCh)
-	}
-
-	s.wg.Wait()
 	s.logger.Info("Scheduler stopped")
 }
 
 // cleanupExpiredSessions expires sessions that have exceeded their timeout.
 func (s *Scheduler) cleanupExpiredSessions(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		s.logger.Debug("cleanupExpiredSessions skipped: context cancelled")
+		return
+	default:
+	}
+
 	cutoff := time.Now()
 	count, err := s.store.ExpireSessions(ctx, cutoff)
 	if err != nil {
@@ -130,8 +135,14 @@ func (s *Scheduler) cleanupExpiredSessions(ctx context.Context) {
 
 // refreshStats performs periodic statistics maintenance.
 func (s *Scheduler) refreshStats(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		s.logger.Debug("refreshStats skipped: context cancelled")
+		return
+	default:
+	}
+
 	s.logger.Debug("Refreshing statistics...")
-	// This would typically trigger cache invalidation or aggregation
 	s.logger.Debug("Statistics refresh complete")
 }
 

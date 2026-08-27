@@ -31,6 +31,8 @@ type Config struct {
 	Export ExportConfig `json:"export"`
 	// Rate limiting configuration
 	RateLimit RateLimitConfig `json:"rate_limit"`
+	// Storage configuration for URL shortener
+	Storage Storage `json:"storage"`
 }
 
 // ServerConfig holds server-specific settings.

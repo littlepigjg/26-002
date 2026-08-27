@@ -5,24 +5,34 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
-// JSONFormatter outputs log entries in JSON format for structured log processing.
+const defaultMaxEntrySize = 4096
+
 type JSONFormatter struct {
-	output io.Writer
-	level  Level
+	output       io.Writer
+	level        Level
+	maxEntrySize int
 }
 
-// NewJSONFormatter creates a new JSON-formatted logger output.
 func NewJSONFormatter(output io.Writer, level Level) *JSONFormatter {
 	return &JSONFormatter{
-		output: output,
-		level:  level,
+		output:       output,
+		level:        level,
+		maxEntrySize: defaultMaxEntrySize,
 	}
 }
 
-// FormatEntry creates a JSON-formatted log entry.
+func (f *JSONFormatter) SetMaxEntrySize(size int) {
+	f.maxEntrySize = size
+}
+
+func (f *JSONFormatter) GetMaxEntrySize() int {
+	return f.maxEntrySize
+}
+
 func (f *JSONFormatter) FormatEntry(level Level, msg string, fields map[string]interface{}) []byte {
 	entry := map[string]interface{}{
 		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
@@ -38,11 +48,36 @@ func (f *JSONFormatter) FormatEntry(level Level, msg string, fields map[string]i
 	if err != nil {
 		return []byte(fmt.Sprintf(`{"level":"ERROR","message":"failed to marshal log entry: %s"}`, err.Error()))
 	}
+
+	if len(data) > f.maxEntrySize {
+		data = f.applyMaxSize(data, level, msg, fields)
+	}
+
 	data = append(data, '\n')
 	return data
 }
 
-// Write writes a JSON-formatted entry to the output.
+func (f *JSONFormatter) applyMaxSize(data []byte, level Level, msg string, fields map[string]interface{}) []byte {
+	if len(msg) > f.maxEntrySize/2 {
+		truncatedMsg := msg[:f.maxEntrySize/2] + "...(truncated)"
+		entry := map[string]interface{}{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"level":     level.String(),
+			"message":   truncatedMsg,
+		}
+		for k, v := range fields {
+			entry[k] = v
+		}
+		result, err := json.Marshal(entry)
+		if err != nil {
+			return data[:f.maxEntrySize]
+		}
+		return result
+	}
+
+	return data
+}
+
 func (f *JSONFormatter) Write(level Level, msg string, fields map[string]interface{}) {
 	if level < f.level {
 		return
@@ -51,49 +86,49 @@ func (f *JSONFormatter) Write(level Level, msg string, fields map[string]interfa
 	_, _ = f.output.Write(data)
 }
 
-// JSONLogger is a logger that outputs in JSON format.
 type JSONLogger struct {
 	*Logger
-	formatter *JSONFormatter
+	formatter    *JSONFormatter
+	maxEntrySize int
 }
 
-// NewJSONLogger creates a JSON-output logger.
 func NewJSONLogger(output io.Writer, level Level) *JSONLogger {
 	logger := New(output, level, "")
 	return &JSONLogger{
-		Logger:    logger,
-		formatter: NewJSONFormatter(output, level),
+		Logger:       logger,
+		formatter:    NewJSONFormatter(output, level),
+		maxEntrySize: defaultMaxEntrySize,
 	}
 }
 
-// DebugfJSON logs a JSON entry at debug level.
+func (l *JSONLogger) SetMaxEntrySize(size int) {
+	l.maxEntrySize = size
+	l.formatter.SetMaxEntrySize(size)
+	l.Logger.SetMaxEntrySize(size)
+}
+
 func (l *JSONLogger) DebugfJSON(format string, fields map[string]interface{}, args ...interface{}) {
 	l.formatter.Write(LevelDebug, fmt.Sprintf(format, args...), fields)
 }
 
-// InfofJSON logs a JSON entry at info level.
 func (l *JSONLogger) InfofJSON(format string, fields map[string]interface{}, args ...interface{}) {
 	l.formatter.Write(LevelInfo, fmt.Sprintf(format, args...), fields)
 }
 
-// WarnfJSON logs a JSON entry at warn level.
 func (l *JSONLogger) WarnfJSON(format string, fields map[string]interface{}, args ...interface{}) {
 	l.formatter.Write(LevelWarn, fmt.Sprintf(format, args...), fields)
 }
 
-// ErrorfJSON logs a JSON entry at error level.
 func (l *JSONLogger) ErrorfJSON(format string, fields map[string]interface{}, args ...interface{}) {
 	l.formatter.Write(LevelError, fmt.Sprintf(format, args...), fields)
 }
 
-// FileLogger writes logs to a file.
 type FileLogger struct {
 	logger   *Logger
 	file     *os.File
 	filePath string
 }
 
-// NewFileLogger creates a logger that writes to a file.
 func NewFileLogger(filePath string, level Level) (*FileLogger, error) {
 	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -107,12 +142,21 @@ func NewFileLogger(filePath string, level Level) (*FileLogger, error) {
 	}, nil
 }
 
-// Logger returns the underlying Logger.
 func (f *FileLogger) Logger() *Logger {
 	return f.logger
 }
 
-// Close closes the log file.
 func (f *FileLogger) Close() error {
 	return f.file.Close()
 }
+
+func truncateFieldValues(entry map[string]interface{}, maxFieldSize int) map[string]interface{} {
+	for k, v := range entry {
+		if s, ok := v.(string); ok && len(s) > maxFieldSize {
+			entry[k] = s[:maxFieldSize] + "...(truncated)"
+		}
+	}
+	return entry
+}
+
+var _ = strings.TrimSpace

@@ -5,8 +5,9 @@
 set -e
 
 # Configuration
-IMAGE_NAME="ubaas-server"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_NAME="${1:-ubaas-server}"
+IMAGE_TAG="${2:-latest}"
+PLATFORM="${3:-linux/amd64}"
 DOCKERFILE="${DOCKERFILE:-benzhi.Dockerfile}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 REGISTRY="${REGISTRY:-}"
@@ -50,6 +51,7 @@ log_info "Starting UBAAS Docker image build..."
 log_info "Dockerfile: $DOCKERFILE"
 log_info "Context directory: $CONTEXT_DIR"
 log_info "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+log_info "Platform: $PLATFORM"
 
 # Check if Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
@@ -57,13 +59,24 @@ if [ ! -f "$DOCKERFILE" ]; then
     exit 1
 fi
 
-# Build the Docker image
-docker build \
-    --file "$DOCKERFILE" \
-    --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
-    --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
-    "$CONTEXT_DIR"
+# Build the Docker image with platform support
+if [ "$PLATFORM" = "linux/amd64" ] && [ "$(uname -m)" = "x86_64" ]; then
+    docker build \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+        "$CONTEXT_DIR"
+else
+    docker buildx build \
+        --platform "$PLATFORM" \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+        --load \
+        "$CONTEXT_DIR"
+fi
 
 BUILD_EXIT_CODE=$?
 

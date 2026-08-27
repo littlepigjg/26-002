@@ -31,6 +31,88 @@ type Config struct {
 	Export ExportConfig `json:"export"`
 	// Rate limiting configuration
 	RateLimit RateLimitConfig `json:"rate_limit"`
+	// Storage configuration for URL persistence
+	Storage StorageConfig `json:"storage"`
+}
+
+// StorageConfig holds storage layer settings for URL persistence.
+type StorageConfig struct {
+	mu           *sync.RWMutex
+	urlFilePath  string
+	logFilePath  string
+	syncInterval time.Duration
+	flushOnWrite bool
+	urlIndex     map[string]string
+}
+
+// URLFilePath sets the URL file path.
+func (s *StorageConfig) URLFilePath(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.urlFilePath = path
+}
+
+// GetURLFilePath returns the URL file path.
+func (s *StorageConfig) GetURLFilePath() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.urlFilePath
+}
+
+// LogFilePath sets the log file path.
+func (s *StorageConfig) LogFilePath(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logFilePath = path
+}
+
+// GetLogFilePath returns the log file path.
+func (s *StorageConfig) GetLogFilePath() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.logFilePath
+}
+
+// SyncInterval sets the sync interval duration.
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.syncInterval = d
+}
+
+// GetSyncInterval returns the sync interval duration.
+func (s *StorageConfig) GetSyncInterval() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.syncInterval
+}
+
+// FlushOnWrite sets whether to flush on write.
+func (s *StorageConfig) FlushOnWrite(b bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushOnWrite = b
+}
+
+// GetFlushOnWrite returns whether to flush on write.
+func (s *StorageConfig) GetFlushOnWrite() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.flushOnWrite
+}
+
+// GetURLIndex returns the URL index map.
+func (s *StorageConfig) GetURLIndex() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.urlIndex
+}
+
+// SetURLIndex sets the URL index map.
+func (s *StorageConfig) SetURLIndex(idx map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.urlIndex = idx
 }
 
 // ServerConfig holds server-specific settings.
@@ -101,9 +183,9 @@ type RateLimitConfig struct {
 	WindowSec  int   `json:"window_seconds"`
 }
 
-// DefaultConfig returns a Config with sensible defaults.
-func DefaultConfig() *Config {
-	return &Config{
+// Default returns a Config with sensible defaults.
+func Default() *Config {
+	c := &Config{
 		mu: &sync.RWMutex{},
 		Server: ServerConfig{
 			Host:            "0.0.0.0",
@@ -149,12 +231,21 @@ func DefaultConfig() *Config {
 			MaxBurst:  200,
 			WindowSec: 60,
 		},
+		Storage: StorageConfig{
+			mu:           &sync.RWMutex{},
+			urlFilePath:  "./data/urls.db",
+			logFilePath:  "./data/access.log",
+			syncInterval: 5 * time.Second,
+			flushOnWrite: true,
+			urlIndex:     make(map[string]string),
+		},
 	}
+	return c
 }
 
 // Load loads configuration from environment variables, falling back to defaults.
 func Load() *Config {
-	cfg := DefaultConfig()
+	cfg := Default()
 
 	// Server config
 	if v := os.Getenv("SERVER_HOST"); v != "" {
@@ -234,6 +325,14 @@ func (c *Config) Get() Config {
 		Logging:   c.Logging,
 		Export:    c.Export,
 		RateLimit: c.RateLimit,
+		Storage: StorageConfig{
+			mu:           &sync.RWMutex{},
+			urlFilePath:  c.Storage.urlFilePath,
+			logFilePath:  c.Storage.logFilePath,
+			syncInterval: c.Storage.syncInterval,
+			flushOnWrite: c.Storage.flushOnWrite,
+			urlIndex:     c.Storage.urlIndex,
+		},
 	}
 	return result
 }

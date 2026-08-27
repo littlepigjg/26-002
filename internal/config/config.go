@@ -21,6 +21,8 @@ type Config struct {
 	Server ServerConfig `json:"server"`
 	// Database/storage configuration
 	Store StoreConfig `json:"store"`
+	// Storage configuration for file-based operations
+	Storage StorageConfig `json:"storage"`
 	// Session configuration
 	Session SessionConfig `json:"session"`
 	// Analytics configuration
@@ -86,6 +88,54 @@ type LoggingConfig struct {
 	MaxSize int    `json:"max_size_mb"`
 }
 
+// StorageConfig holds file-based storage settings.
+type StorageConfig struct {
+	urlFilePath  string
+	logFilePath  string
+	syncInterval time.Duration
+	flushOnWrite bool
+}
+
+// URLFilePath sets the file path for URL storage.
+func (s *StorageConfig) URLFilePath(path string) {
+	s.urlFilePath = path
+}
+
+// LogFilePath sets the file path for access log storage.
+func (s *StorageConfig) LogFilePath(path string) {
+	s.logFilePath = path
+}
+
+// SyncInterval sets the interval for syncing data to disk.
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+// FlushOnWrite sets whether to flush to disk on every write.
+func (s *StorageConfig) FlushOnWrite(b bool) {
+	s.flushOnWrite = b
+}
+
+// GetURLFilePath returns the file path for URL storage.
+func (s *StorageConfig) GetURLFilePath() string {
+	return s.urlFilePath
+}
+
+// GetLogFilePath returns the file path for access log storage.
+func (s *StorageConfig) GetLogFilePath() string {
+	return s.logFilePath
+}
+
+// GetSyncInterval returns the sync interval duration.
+func (s *StorageConfig) GetSyncInterval() time.Duration {
+	return s.syncInterval
+}
+
+// GetFlushOnWrite returns whether to flush on write.
+func (s *StorageConfig) GetFlushOnWrite() bool {
+	return s.flushOnWrite
+}
+
 // ExportConfig holds export-related settings.
 type ExportConfig struct {
 	MaxRecords    int  `json:"max_records"`
@@ -120,6 +170,12 @@ func DefaultConfig() *Config {
 			FlushInterval:      5,
 			EvictionInterval:   3600,
 		},
+		Storage: StorageConfig{
+			urlFilePath:  "data/urls.json",
+			logFilePath:  "data/access.log",
+			syncInterval: 10 * time.Second,
+			flushOnWrite: false,
+		},
 		Session: SessionConfig{
 			TimeoutMinutes:      30,
 			MaxIdleMinutes:      60,
@@ -150,6 +206,11 @@ func DefaultConfig() *Config {
 			WindowSec: 60,
 		},
 	}
+}
+
+// Default returns a Config with sensible defaults.
+func Default() *Config {
+	return DefaultConfig()
 }
 
 // Load loads configuration from environment variables, falling back to defaults.

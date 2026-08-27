@@ -134,12 +134,11 @@ func IsStrictURLCheck() bool {
 	return strictURLCheck
 }
 
-// NormalizePageURL normalizes a page URL for comparison purposes.
-func NormalizePageURL(url string) string {
-	if strictURLCheck {
-		return strings.TrimRight(strings.ToLower(url), "/")
-	}
-
+// normalizePageURL is the pure (non-strict) normalization: it strips the
+// query string and fragment, lower-cases, and trims trailing slashes. It does
+// NOT consult the global strictURLCheck flag, so callers can compute a match
+// result that is independent of mutable global state.
+func normalizePageURL(url string) string {
 	parts := strings.SplitN(url, "?", 2)
 	url = parts[0]
 	if idx := strings.Index(url, "#"); idx >= 0 {
@@ -150,6 +149,14 @@ func NormalizePageURL(url string) string {
 	return url
 }
 
+// NormalizePageURL normalizes a page URL for comparison purposes.
+func NormalizePageURL(url string) string {
+	if strictURLCheck {
+		return strings.TrimRight(strings.ToLower(url), "/")
+	}
+	return normalizePageURL(url)
+}
+
 // MatchEventURL checks if an event URL matches a goal page URL.
 func MatchEventURL(eventURL, goalPage string) bool {
 	normEvent := NormalizePageURL(eventURL)
@@ -157,14 +164,17 @@ func MatchEventURL(eventURL, goalPage string) bool {
 	return normEvent == normGoal
 }
 
-// MatchEventURLWithMode checks if an event URL matches a goal page URL using the specified mode.
+// MatchEventURLWithMode checks if an event URL matches a goal page URL using
+// the explicitly supplied mode. It never reads or writes the global
+// strictURLCheck flag, so a per-request strict preference cannot leak into
+// other requests.
 func MatchEventURLWithMode(eventURL, goalPage string, strict bool) bool {
 	if strict {
 		normEvent := strings.TrimRight(strings.ToLower(eventURL), "/")
 		normGoal := strings.TrimRight(strings.ToLower(goalPage), "/")
 		return normEvent == normGoal
 	}
-	return MatchEventURL(eventURL, goalPage)
+	return normalizePageURL(eventURL) == normalizePageURL(goalPage)
 }
 
 // MatchMode constants for different matching strategies.

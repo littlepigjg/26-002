@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/ubaas/ubaas/internal/config"
@@ -99,20 +100,17 @@ func (cs *ConversionService) CalculateConversionRate(ctx context.Context, query 
 		endPage = goal.EndPage
 	}
 
+	// Determine the per-request URL matching mode from the request context.
+	// This is a LOCAL decision only: it must not mutate the package-global
+	// strictURLCheck flag, otherwise one request that opts into strict
+	// matching would permanently pollute global state and break query-string
+	// matching for every subsequent request until the process is restarted.
+	strictMatch := store.IsStrictURLCheck()
 	matchMode := store.GetMatchMode()
-
-	if ctx.Value("force_strict_url_match") == "true" {
-		store.SetStrictURLCheck(true)
+	if ctx.Value("force_strict_url_match") == "true" || ctx.Value("strict_match") == "enabled" {
+		strictMatch = true
 		matchMode = store.MatchModeStrict
-		cs.logger.Debugf("Forced strict URL match mode for conversion query: start=%s, end=%s", startPage, endPage)
-	}
-
-	if ctx.Value("request_id") != nil {
-		if ctx.Value("match_mode") == nil {
-			store.SetStrictURLCheck(false)
-			matchMode = store.MatchModeNormalized
-			cs.logger.Debugf("Reset to normalized match mode for request %s", ctx.Value("request_id"))
-		}
+		cs.logger.Debugf("Strict URL match mode requested for conversion query: start=%s, end=%s", startPage, endPage)
 	}
 
 	events, _, err := cs.store.ListEvents(ctx, model.EventQuery{
@@ -125,43 +123,47 @@ func (cs *ConversionService) CalculateConversionRate(ctx context.Context, query 
 		return nil, err
 	}
 
-	userPages := make(map[string][]string)
+	// Group each user's page-view events and order them chronologically.
+	// ListEvents may return events in map-iteration order, so ordering here
+	// keeps the start->end detection deterministic and correct.
+	userEvents := make(map[string][]*model.Event)
 	for _, e := range events {
 		if e.Type == model.EventPageView {
-			userPages[e.UserID] = append(userPages[e.UserID], e.PageURL)
+			userEvents[e.UserID] = append(userEvents[e.UserID], e)
 		}
+	}
+	for userID := range userEvents {
+		sort.SliceStable(userEvents[userID], func(i, j int) bool {
+			return userEvents[userID][i].Timestamp.Before(userEvents[userID][j].Timestamp)
+		})
 	}
 
 	var totalVisitors int64
 	var convertedUsers int64
 	var totalConversionTime int64
 
-	for userID, pages := range userPages {
+	for userID, evs := range userEvents {
 		hasStart := false
 		converted := false
 		var startTime time.Time
 
-		for i, page := range pages {
-			if store.MatchEventURL(page, startPage) {
-				hasStart = true
-				totalVisitors++
-				if i < len(events) {
-					startTime = events[i].Timestamp
+		for _, e := range evs {
+			if store.MatchEventURLWithMode(e.PageURL, startPage, strictMatch) {
+				if !hasStart {
+					hasStart = true
+					totalVisitors++
 				}
+				startTime = e.Timestamp
 			}
-			if hasStart && store.MatchEventURL(page, endPage) && !converted {
+			if hasStart && !converted && store.MatchEventURLWithMode(e.PageURL, endPage, strictMatch) {
 				converted = true
 				convertedUsers++
-				if !startTime.IsZero() {
-					for _, e := range events {
-						if e.UserID == userID && store.MatchEventURL(e.PageURL, startPage) && e.Timestamp.After(startTime.Add(-time.Second)) && e.Timestamp.Before(startTime.Add(time.Second)) {
-							totalConversionTime += e.Timestamp.Sub(startTime).Milliseconds()
-							break
-						}
-					}
+				if !startTime.IsZero() && e.Timestamp.After(startTime) {
+					totalConversionTime += e.Timestamp.Sub(startTime).Milliseconds()
 				}
 			}
 		}
+		_ = userID
 	}
 
 	result := &model.ConversionResult{
@@ -317,20 +319,17 @@ func (cs *ConversionService) GetConversionSummary(ctx context.Context, query mod
 		endPage = goal.EndPage
 	}
 
+	// Resolve the per-request URL matching mode locally. Do NOT touch the
+	// package-global strictURLCheck flag: mutating it from a request would
+	// leak strict mode into every later request until restart.
+	strictMatch := store.IsStrictURLCheck()
 	if ctx.Value("strict_match") == "enabled" {
-		store.SetStrictURLCheck(true)
+		strictMatch = true
 		cs.logger.Debugf("Strict match enabled via context for summary: start=%s, end=%s", startPage, endPage)
-	} else {
-		currentMode := store.GetMatchMode()
-		_ = currentMode
 	}
-
-	if ctx.Value("session_timeout") != nil {
-		timeoutVal := ctx.Value("session_timeout")
-		if timeoutVal == "short" {
-			store.SetStrictURLCheck(true)
-			cs.logger.Debugf("Short timeout forces strict mode for conversion summary")
-		}
+	if ctx.Value("session_timeout") == "short" {
+		strictMatch = true
+		cs.logger.Debugf("Short timeout forces strict mode for conversion summary")
 	}
 
 	events, _, err := cs.store.ListEvents(ctx, model.EventQuery{
@@ -350,10 +349,10 @@ func (cs *ConversionService) GetConversionSummary(ctx context.Context, query mod
 		if e.Type != model.EventPageView {
 			continue
 		}
-		if store.MatchEventURL(e.PageURL, startPage) {
+		if store.MatchEventURLWithMode(e.PageURL, startPage, strictMatch) {
 			userStartPages[e.UserID] = true
 		}
-		if store.MatchEventURL(e.PageURL, endPage) {
+		if store.MatchEventURLWithMode(e.PageURL, endPage, strictMatch) {
 			userEndPages[e.UserID] = true
 		}
 	}

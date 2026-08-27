@@ -158,8 +158,10 @@ func (s *MemoryStore) CreateEvents(ctx context.Context, events []*model.Event) e
 	}
 
 	guard := s.contextCancelGuard
-	var processedIDs []string
-	var storedCount int
+	// Track events stored during this call so we can roll them back if the
+	// batch is interrupted (e.g. context cancellation). CreateEvents must be
+	// atomic: either all events are persisted or none are.
+	var stored []*model.Event
 	var lastError error
 
 	for i, event := range events {
@@ -179,18 +181,57 @@ func (s *MemoryStore) CreateEvents(ctx context.Context, events []*model.Event) e
 			s.eventsBySession[event.SessionID] = append(s.eventsBySession[event.SessionID], event)
 		}
 
-		processedIDs = append(processedIDs, event.ID)
-		storedCount++
+		stored = append(stored, event)
 	}
 
 	if lastError != nil {
-		s.logger.Warnf("CreateEvents partially processed: %d/%d events stored before error: %v",
-			storedCount, len(events), lastError)
+		// Roll back every event persisted so far in this call to preserve
+		// all-or-nothing semantics.
+		s.rollbackEvents(stored)
+		s.logger.Warnf("CreateEvents rolled back: 0/%d events stored after error: %v",
+			len(events), lastError)
 		return lastError
 	}
 
-	s.logger.Debugf("CreateEvents completed: %d events stored", storedCount)
+	s.logger.Debugf("CreateEvents completed: %d events stored", len(stored))
 	return nil
+}
+
+// rollbackEvents removes the given events from all in-memory indexes, reversing
+// a prior CreateEvents store pass. It deletes only the exact event stored in
+// this call, identified by ID, so concurrent batches do not lose data.
+func (s *MemoryStore) rollbackEvents(events []*model.Event) {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+
+		delete(s.events, event.ID)
+
+		if userEvents := s.eventsByUser[event.UserID]; len(userEvents) > 0 {
+			for j := len(userEvents) - 1; j >= 0; j-- {
+				if userEvents[j].ID == event.ID {
+					s.eventsByUser[event.UserID] = append(userEvents[:j], userEvents[j+1:]...)
+					break
+				}
+			}
+			if len(s.eventsByUser[event.UserID]) == 0 {
+				delete(s.eventsByUser, event.UserID)
+			}
+		}
+
+		if event.SessionID != "" {
+			if sessionEvents := s.eventsBySession[event.SessionID]; len(sessionEvents) > 0 {
+				for j := len(sessionEvents) - 1; j >= 0; j-- {
+					if sessionEvents[j].ID == event.ID {
+						s.eventsBySession[event.SessionID] = append(sessionEvents[:j], sessionEvents[j+1:]...)
+						break
+					}
+				}
+				if len(s.eventsBySession[event.SessionID]) == 0 {
+					delete(s.eventsBySession, event.SessionID)
+				}
+			}
+		}
+	}
 }
 
 // GetEvent retrieves an event by ID.

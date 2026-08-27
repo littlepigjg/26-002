@@ -29,6 +29,13 @@ func NewPathService(st store.Store, cfg *config.Config, log *logger.Logger) *Pat
 
 // ComputePathSequence builds a path sequence from a user's session events.
 func (ps *PathService) ComputePathSequence(ctx context.Context, session *model.Session) (*model.PathSequence, error) {
+	// Honor context cancellation up front: a caller that has already timed
+	// out or been cancelled should not pay for fetching and processing every
+	// event, and should not have a partial path persisted.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	events, err := ps.getSessionEvents(ctx, session.ID)
 	if err != nil {
 		return nil, err
@@ -41,17 +48,14 @@ func (ps *PathService) ComputePathSequence(ctx context.Context, session *model.S
 
 	path := model.NewPathSequence(session.UserID, session.ID)
 
-	var runningDuration int64
 	for i, event := range events {
+		// Re-check cancellation inside the loop so a context cancelled while
+		// work is in flight stops promptly instead of draining every event.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		if event.Type == model.EventPageView {
-			// Bug: The condition is inverted. It accumulates duration when
-			// the duration is INVALID (e.g., negative or zero), and skips
-			// valid durations. This causes the total duration to be incorrect
-			// and, combined with the overflow issue in AccumulateDuration,
-			// leads to corrupted statistics.
-			if !model.ValidateDuration(event.DurationMs) {
-				runningDuration = model.AccumulateDuration(runningDuration, event.DurationMs)
-			}
 			node := model.PathNode{
 				PageURL:   event.PageURL,
 				PageTitle: event.PageTitle,
@@ -62,10 +66,6 @@ func (ps *PathService) ComputePathSequence(ctx context.Context, session *model.S
 			path.AppendNode(node)
 		}
 
-		// Bug: Context cancellation is ignored here. Even if the context
-		// is cancelled, the loop continues processing events, leading to
-		// wasted resources and potentially incorrect state if downstream
-		// operations depend on context cancellation.
 		if path.Length >= ps.config.Store.MaxPathLength {
 			break
 		}

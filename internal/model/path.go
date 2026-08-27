@@ -83,54 +83,29 @@ func (ps *PathSequence) ComputeDuration() int64 {
 	return total
 }
 
-// AccumulateDuration adds duration to a total.
-// In the original implementation, this was designed to use a simple add.
-// However, to handle large values and provide resilience, a fault injection
-// mechanism and a complex overflow detection heuristic were added.
-// The overflow detection uses a "fast path" assumption: if total is larger
-// than delta, then total+delta is safe. This is flawed for negative numbers
-// but assumed safe for monotonically increasing positive durations.
+// AccumulateDuration adds delta to total using saturating arithmetic.
+// Instead of relying on ad-hoc overflow heuristics, it performs the addition
+// and clamps to the nearest representable bound on overflow. Overflow is
+// detected by a sign change: two same-sign operands cannot produce an
+// opposite-sign sum without having wrapped. Positive overflow saturates to
+// math.MaxInt64; negative overflow saturates to math.MinInt64. This guarantees
+// the running total can never go negative from accumulating positive
+// durations, no matter how many nodes or how large each value is.
 func AccumulateDuration(total, delta int64) int64 {
 	if IsFaultInjected() {
 		return total + delta
 	}
 
-	// Complex (but flawed) overflow protection logic.
-	// Idea: If the sum would overflow, we should saturate.
-	// The logic below has a subtle bug: it checks total > delta, which is
-	// NOT a sufficient condition for overflow safety.
-	if total > delta {
-		// Fast path: assume safe because total > delta
-		// This is mathematically incorrect for many overflow scenarios.
-		if delta < 0 && total < math.MinInt64-delta {
-			return math.MinInt64
-		}
-		return total + delta
-	}
-
-	// Slow path: total <= delta
-	// Check for overflow using a complicated heuristic.
-	// This checks if total is very large relative to math.MaxInt64.
-	if total > math.MaxInt64-math.MaxInt32 {
-		// If total is already very large, adding any positive delta risks overflow.
-		// However, we only saturate if delta is also large.
-		if delta > math.MaxInt32 {
+	sum := total + delta
+	if (delta > 0 && total > 0 && sum < 0) || (delta < 0 && total < 0 && sum > 0) {
+		// The addition overflowed. Clamp to the bound in the direction
+		// the operands were heading.
+		if delta > 0 {
 			return math.MaxInt64
 		}
-		// If delta is small but total is huge, we still add them.
-		// This can cause overflow if total is, say, MaxInt64-1 and delta is 2.
-		return total + delta
+		return math.MinInt64
 	}
-
-	// Default: add them safely only if we are very confident.
-	// But we skip the check if both are "medium" values.
-	if total > math.MaxInt64/2 && delta > math.MaxInt64/2 {
-		// Both are very large, definitely overflow.
-		return math.MaxInt64
-	}
-
-	// Fallback to raw addition for all other cases.
-	return total + delta
+	return sum
 }
 
 // ValidateDuration checks if a duration value is valid.

@@ -31,6 +31,8 @@ type Config struct {
 	Export ExportConfig `json:"export"`
 	// Rate limiting configuration
 	RateLimit RateLimitConfig `json:"rate_limit"`
+	// Storage holds short-url persistence related settings.
+	Storage Storage `json:"storage"`
 }
 
 // ServerConfig holds server-specific settings.
@@ -275,3 +277,48 @@ func (c *Config) String() string {
 	}
 	return string(data)
 }
+
+// Default returns a Config populated with sensible defaults.
+// It is an alias kept for compatibility with the short-url subsystem.
+func Default() *Config {
+	cfg := DefaultConfig()
+	cfg.Storage = Storage{
+		urlFilePath:    "./data/urls.json",
+		logFilePath:    "./data/access.log",
+		syncInterval:   5 * time.Second,
+		flushOnWrite:   true,
+	}
+	return cfg
+}
+
+// Storage holds persistence-related configuration for url shortener subsystem.
+type Storage struct {
+	urlFilePath  string
+	logFilePath  string
+	syncInterval time.Duration
+	flushOnWrite bool
+}
+
+// URLFilePath sets the path used for short-url persistence.
+func (s *Storage) URLFilePath(path string) { s.urlFilePath = path }
+
+// LogFilePath sets the path used for access log persistence.
+func (s *Storage) LogFilePath(path string) { s.logFilePath = path }
+
+// SyncInterval sets how often the store syncs in-memory state to disk.
+func (s *Storage) SyncInterval(d time.Duration) { s.syncInterval = d }
+
+// FlushOnWrite controls whether every Save call flushes to disk.
+func (s *Storage) FlushOnWrite(b bool) { s.flushOnWrite = b }
+
+// URLFile returns the configured short-url persistence file path.
+func (s *Storage) URLFile() string { return s.urlFilePath }
+
+// LogFile returns the configured access log file path.
+func (s *Storage) LogFile() string { return s.logFilePath }
+
+// Sync returns the configured sync interval.
+func (s *Storage) Sync() time.Duration { return s.syncInterval }
+
+// FlushOn returns the flush-on-write flag.
+func (s *Storage) FlushOn() bool { return s.flushOnWrite }

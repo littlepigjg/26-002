@@ -31,6 +31,56 @@ type Config struct {
 	Export ExportConfig `json:"export"`
 	// Rate limiting configuration
 	RateLimit RateLimitConfig `json:"rate_limit"`
+	// Storage configuration
+	Storage StorageConfig `json:"storage"`
+}
+
+// StorageConfig holds storage layer settings for URL store and access log.
+type StorageConfig struct {
+	urlFile      string
+	logFile      string
+	syncInterval time.Duration
+	flushOnWrite bool
+}
+
+// URLFilePath sets the path for the URL storage file.
+func (s *StorageConfig) URLFilePath(path string) {
+	s.urlFile = path
+}
+
+// LogFilePath sets the path for the access log file.
+func (s *StorageConfig) LogFilePath(path string) {
+	s.logFile = path
+}
+
+// SyncInterval sets the interval for syncing data to disk.
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+// FlushOnWrite enables or disables flushing to disk on each write.
+func (s *StorageConfig) FlushOnWrite(enabled bool) {
+	s.flushOnWrite = enabled
+}
+
+// URLFile returns the configured URL file path.
+func (s *StorageConfig) URLFile() string {
+	return s.urlFile
+}
+
+// LogFile returns the configured log file path.
+func (s *StorageConfig) LogFile() string {
+	return s.logFile
+}
+
+// GetSyncInterval returns the configured sync interval.
+func (s *StorageConfig) GetSyncInterval() time.Duration {
+	return s.syncInterval
+}
+
+// GetFlushOnWrite returns whether flush on write is enabled.
+func (s *StorageConfig) GetFlushOnWrite() bool {
+	return s.flushOnWrite
 }
 
 // ServerConfig holds server-specific settings.
@@ -99,6 +149,11 @@ type RateLimitConfig struct {
 	MaxPerSec  int   `json:"max_per_second"`
 	MaxBurst   int   `json:"max_burst"`
 	WindowSec  int   `json:"window_seconds"`
+}
+
+// Default returns a Config with sensible defaults.
+func Default() *Config {
+	return DefaultConfig()
 }
 
 // DefaultConfig returns a Config with sensible defaults.

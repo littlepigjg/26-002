@@ -131,6 +131,8 @@ func (s *MemoryStore) CreateEvents(ctx context.Context, events []*model.Event) e
 		return model.ErrStoreClosed
 	}
 
+	// BUG: 没有检查event是否为nil
+	// 当event为nil时，访问event.ID会触发panic
 	for _, event := range events {
 		s.events[event.ID] = event
 		s.eventsByUser[event.UserID] = append(s.eventsByUser[event.UserID], event)

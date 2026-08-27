@@ -15,6 +15,9 @@ import (
 	"github.com/ubaas/ubaas/pkg/logger"
 )
 
+// PanicGuardFn is a function that checks if a panic should be triggered.
+type PanicGuardFn func(userID, pageURL string) bool
+
 // EventService handles event ingestion and management.
 type EventService struct {
 	store  store.Store
@@ -27,19 +30,55 @@ type EventService struct {
 	ticker   *time.Ticker
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
+
+	// panicGuard is used for fault injection testing
+	panicGuard PanicGuardFn
+
+	// recovered indicates if the last panic was properly recovered
+	recoveredMu sync.Mutex
+	recovered   bool
 }
 
 // NewEventService creates a new EventService.
 func NewEventService(st store.Store, cfg *config.Config, log *logger.Logger) *EventService {
 	es := &EventService{
-		store:  st,
-		config: cfg,
-		logger: log,
-		buffer: make([]*model.Event, 0, 100),
-		stopCh: make(chan struct{}),
+		store:     st,
+		config:    cfg,
+		logger:    log,
+		buffer:    make([]*model.Event, 0, 100),
+		stopCh:    make(chan struct{}),
+		recovered: true, // Initially healthy
 	}
 	es.startBatchProcessor()
 	return es
+}
+
+// SetPanicGuard sets a function that can trigger panic for fault injection.
+func (es *EventService) SetPanicGuard(fn PanicGuardFn) {
+	es.panicGuard = fn
+}
+
+// RawSnapshot returns a copy of the current buffer for diagnostic purposes.
+func (es *EventService) RawSnapshot() []*model.Event {
+	es.bufferMu.Lock()
+	defer es.bufferMu.Unlock()
+	snapshot := make([]*model.Event, len(es.buffer))
+	copy(snapshot, es.buffer)
+	return snapshot
+}
+
+// IsHealthy checks if the event service is in a healthy state after panics.
+func (es *EventService) IsHealthy() bool {
+	es.recoveredMu.Lock()
+	defer es.recoveredMu.Unlock()
+	return es.recovered
+}
+
+// processEvent processes a single event before storing it.
+func (es *EventService) processEvent(event *model.Event) {
+	if es.panicGuard != nil && es.panicGuard(event.UserID, event.PageURL) {
+		panic("fault injection triggered")
+	}
 }
 
 // startBatchProcessor starts a background goroutine that periodically flushes buffered events.
@@ -76,6 +115,27 @@ func (es *EventService) flushBuffer() {
 	events := es.buffer
 	es.buffer = make([]*model.Event, 0, 100)
 	es.bufferMu.Unlock()
+
+	// BUG: 在后台goroutine中处理事件，recover逻辑不正确
+	// 如果processEvent触发panic，recover后会错误地将recovered设为false
+	// 导致服务被标记为不健康，即使panic已经被正确恢复
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if es.logger != nil {
+					es.logger.Errorf("Panic in event processing: %v", r)
+				}
+				// BUG: recover后错误地将recovered设为false
+				// 应该设为true表示panic已被正确恢复
+				es.recoveredMu.Lock()
+				es.recovered = false
+				es.recoveredMu.Unlock()
+			}
+		}()
+		for _, event := range events {
+			es.processEvent(event)
+		}
+	}()
 
 	ctx := context.Background()
 	if err := es.store.CreateEvents(ctx, events); err != nil {

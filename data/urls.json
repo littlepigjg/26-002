@@ -1,0 +1,29 @@
+{
+  "aaaa1": {
+    "Code": "aaaa1",
+    "RawURL": "https://example.com/valid-page",
+    "CreatedAt": "2026-08-27T16:25:19.505750906+08:00",
+    "Visits": 0,
+    "Custom": true,
+    "Disabled": false,
+    "MaxVisits": 0
+  },
+  "bbbb2": {
+    "Code": "bbbb2",
+    "RawURL": "https://example.com/expired-page",
+    "CreatedAt": "2026-08-27T16:25:19.505753152+08:00",
+    "Visits": 1,
+    "Custom": true,
+    "Disabled": false,
+    "MaxVisits": 1
+  },
+  "cccc3": {
+    "Code": "cccc3",
+    "RawURL": "https://example.com/new-page",
+    "CreatedAt": "2026-08-27T16:25:19.510933225+08:00",
+    "Visits": 0,
+    "Custom": true,
+    "Disabled": false,
+    "MaxVisits": 0
+  }
+}

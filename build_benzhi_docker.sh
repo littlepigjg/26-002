@@ -1,12 +1,19 @@
 #!/bin/bash
 # UBAAS Docker Build Script
-# This script builds the Docker image for the UBAAS application.
+# Usage: ./build_benzhi_docker.sh [IMAGE_NAME] [IMAGE_TAG] [PLATFORM]
+# Examples:
+#   ./build_benzhi_docker.sh exam-system latest linux/amd64
+#   ./build_benzhi_docker.sh exam-system latest linux/arm64
+#   ./build_benzhi_docker.sh exam-system latest (builds for current architecture)
 
 set -e
 
+# Arguments
+IMAGE_NAME="${1:-ubaas-server}"
+IMAGE_TAG="${2:-latest}"
+PLATFORM="${3:-}"
+
 # Configuration
-IMAGE_NAME="ubaas-server"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
 DOCKERFILE="${DOCKERFILE:-benzhi.Dockerfile}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 REGISTRY="${REGISTRY:-}"
@@ -46,7 +53,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-log_info "Starting UBAAS Docker image build..."
+log_info "Starting Docker image build..."
 log_info "Dockerfile: $DOCKERFILE"
 log_info "Context directory: $CONTEXT_DIR"
 log_info "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
@@ -57,15 +64,43 @@ if [ ! -f "$DOCKERFILE" ]; then
     exit 1
 fi
 
-# Build the Docker image
-docker build \
-    --file "$DOCKERFILE" \
-    --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
-    --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
-    "$CONTEXT_DIR"
+# Check if go.sum exists
+if [ ! -f "go.sum" ]; then
+    log_warn "go.sum not found, generating..."
+    go mod tidy
+fi
 
-BUILD_EXIT_CODE=$?
+# Build the Docker image
+if [ -n "$PLATFORM" ]; then
+    log_info "Building for platform: $PLATFORM"
+    
+    # Use buildx for cross-platform builds
+    BUILDER_NAME="multiarch"
+    BUILDKIT_ENABLED=1
+    
+    docker buildx build \
+        --builder "$BUILDER_NAME" \
+        --platform "$PLATFORM" \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+        --load \
+        "$CONTEXT_DIR"
+    
+    BUILD_EXIT_CODE=$?
+else
+    log_info "Building for current platform..."
+    
+    docker build \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+        "$CONTEXT_DIR"
+    
+    BUILD_EXIT_CODE=$?
+fi
 
 if [ $BUILD_EXIT_CODE -ne 0 ]; then
     log_error "Docker build failed with exit code $BUILD_EXIT_CODE"

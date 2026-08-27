@@ -1,4 +1,3 @@
-// Package cache provides an in-memory cache implementation with TTL support.
 package cache
 
 import (
@@ -6,10 +5,8 @@ import (
 	"time"
 )
 
-// DefaultTTL is the default time-to-live for cache entries.
 const DefaultTTL = 5 * time.Minute
 
-// Entry represents a single cache entry.
 type Entry struct {
 	Key       string
 	Value     interface{}
@@ -18,40 +15,71 @@ type Entry struct {
 	HitCount  int
 }
 
-// IsExpired checks if the entry has expired.
 func (e *Entry) IsExpired() bool {
 	return time.Now().After(e.ExpiresAt)
 }
 
-// Cache is a thread-safe in-memory cache with TTL support.
 type Cache struct {
-	mu    sync.RWMutex
-	items map[string]*Entry
-	ttl   time.Duration
+	mu       sync.RWMutex
+	items    map[string]*Entry
+	ttl      time.Duration
+	maxItems int
+	order    []string
 }
 
-// New creates a new Cache with the given default TTL.
 func New(ttl time.Duration) *Cache {
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
 	return &Cache{
-		items: make(map[string]*Entry),
-		ttl:   ttl,
+		items:    make(map[string]*Entry),
+		ttl:      ttl,
+		maxItems: 1000,
+		order:    make([]string, 0, 1000),
 	}
 }
 
-// Set adds or updates a cache entry with the default TTL.
+func NewWithMaxSize(ttl time.Duration, maxItems int) *Cache {
+	if ttl <= 0 {
+		ttl = DefaultTTL
+	}
+	if maxItems <= 0 {
+		maxItems = 1000
+	}
+	return &Cache{
+		items:    make(map[string]*Entry),
+		ttl:      ttl,
+		maxItems: maxItems,
+		order:    make([]string, 0, maxItems),
+	}
+}
+
 func (c *Cache) Set(key string, value interface{}) {
 	c.SetWithTTL(key, value, c.ttl)
 }
 
-// SetWithTTL adds or updates a cache entry with a custom TTL.
 func (c *Cache) SetWithTTL(key string, value interface{}, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	now := time.Now()
+
+	if _, exists := c.items[key]; exists {
+		c.items[key] = &Entry{
+			Key:       key,
+			Value:     value,
+			ExpiresAt: now.Add(ttl),
+			CreatedAt: now,
+			HitCount:  0,
+		}
+		c.moveToEnd(key)
+		return
+	}
+
+	if len(c.items) >= c.maxItems {
+		c.evictOldest()
+	}
+
 	c.items[key] = &Entry{
 		Key:       key,
 		Value:     value,
@@ -59,10 +87,41 @@ func (c *Cache) SetWithTTL(key string, value interface{}, ttl time.Duration) {
 		CreatedAt: now,
 		HitCount:  0,
 	}
+	c.order = append(c.order, key)
 }
 
-// Get retrieves a value from the cache.
-// Returns the value and true if found (and not expired), or nil and false otherwise.
+func (c *Cache) SetWithMaxTTL(key string, value interface{}, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+
+	if _, exists := c.items[key]; exists {
+		c.items[key] = &Entry{
+			Key:       key,
+			Value:     value,
+			ExpiresAt: now.Add(ttl),
+			CreatedAt: now,
+			HitCount:  0,
+		}
+		c.moveToEnd(key)
+		return
+	}
+
+	if len(c.items) >= c.maxItems {
+		c.evictByAccess()
+	}
+
+	c.items[key] = &Entry{
+		Key:       key,
+		Value:     value,
+		ExpiresAt: now.Add(ttl),
+		CreatedAt: now,
+		HitCount:  0,
+	}
+	c.order = append(c.order, key)
+}
+
 func (c *Cache) Get(key string) (interface{}, bool) {
 	c.mu.RLock()
 	entry, ok := c.items[key]
@@ -75,18 +134,23 @@ func (c *Cache) Get(key string) (interface{}, bool) {
 	if entry.IsExpired() {
 		c.mu.Lock()
 		delete(c.items, key)
+		c.removeFromOrder(key)
 		c.mu.Unlock()
 		return nil, false
 	}
 
 	entry.HitCount++
+	c.mu.Lock()
+	c.moveToEnd(key)
+	c.mu.Unlock()
+
 	return entry.Value, true
 }
 
-// GetEntry returns the full cache entry for inspection.
 func (c *Cache) GetEntry(key string) (*Entry, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
 	entry, ok := c.items[key]
 	if !ok {
 		return nil, false
@@ -94,28 +158,28 @@ func (c *Cache) GetEntry(key string) (*Entry, bool) {
 	return entry, !entry.IsExpired()
 }
 
-// Delete removes a key from the cache.
 func (c *Cache) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	delete(c.items, key)
+	c.removeFromOrder(key)
 }
 
-// Clear removes all entries from the cache.
 func (c *Cache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	c.items = make(map[string]*Entry)
+	c.order = c.order[:0]
 }
 
-// Len returns the number of entries in the cache (including expired ones).
 func (c *Cache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.items)
 }
 
-// Cleanup removes expired entries from the cache.
 func (c *Cache) Cleanup() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -125,13 +189,29 @@ func (c *Cache) Cleanup() int {
 	for k, v := range c.items {
 		if now.After(v.ExpiresAt) {
 			delete(c.items, k)
+			c.removeFromOrder(k)
 			count++
 		}
 	}
 	return count
 }
 
-// Keys returns all non-expired keys in the cache.
+func (c *Cache) CleanupExpired() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	count := 0
+	for k, v := range c.items {
+		if now.After(v.ExpiresAt) {
+			delete(c.items, k)
+			c.removeFromOrder(k)
+			count++
+		}
+	}
+	return count
+}
+
 func (c *Cache) Keys() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -146,14 +226,13 @@ func (c *Cache) Keys() []string {
 	return keys
 }
 
-// Stats returns cache statistics.
 type CacheStats struct {
-	TotalEntries int
+	TotalEntries  int
 	ActiveEntries int
 	DefaultTTL    time.Duration
+	MaxItems      int
 }
 
-// Stats returns the current cache statistics.
 func (c *Cache) Stats() CacheStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -170,5 +249,59 @@ func (c *Cache) Stats() CacheStats {
 		TotalEntries:  len(c.items),
 		ActiveEntries: active,
 		DefaultTTL:    c.ttl,
+		MaxItems:      c.maxItems,
+	}
+}
+
+func (c *Cache) moveToEnd(key string) {
+	c.removeFromOrder(key)
+	c.order = append(c.order, key)
+}
+
+func (c *Cache) removeFromOrder(key string) {
+	for i, k := range c.order {
+		if k == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			return
+		}
+	}
+}
+
+func (c *Cache) evictOldest() {
+	if len(c.order) == 0 {
+		return
+	}
+
+	oldest := c.order[0]
+	c.order = c.order[1:]
+	delete(c.items, oldest)
+}
+
+func (c *Cache) evictByAccess() {
+	if len(c.order) == 0 {
+		return
+	}
+
+	oldest := c.order[0]
+	c.order = c.order[1:]
+	delete(c.items, oldest)
+}
+
+func (c *Cache) evictWithTTL() {
+	now := time.Now()
+
+	expiredCount := 0
+	for k, v := range c.items {
+		if now.After(v.ExpiresAt) {
+			delete(c.items, k)
+			c.removeFromOrder(k)
+			expiredCount++
+		}
+	}
+
+	if len(c.items) >= c.maxItems && len(c.order) > 0 {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.items, oldest)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-// LRUCache implements a thread-safe LRU cache with TTL support.
 type LRUCache struct {
 	mu       sync.RWMutex
 	items    map[string]*cacheItem
@@ -19,7 +18,6 @@ type cacheItem struct {
 	ttl       time.Duration
 }
 
-// NewLRUCache creates a new LRU cache with a max item count.
 func NewLRUCache(maxItems int) *LRUCache {
 	return &LRUCache{
 		items:    make(map[string]*cacheItem),
@@ -28,7 +26,6 @@ func NewLRUCache(maxItems int) *LRUCache {
 	}
 }
 
-// Get retrieves a value from the cache.
 func (c *LRUCache) Get(key string) (interface{}, bool) {
 	c.mu.RLock()
 	item, ok := c.items[key]
@@ -43,7 +40,6 @@ func (c *LRUCache) Get(key string) (interface{}, bool) {
 		return nil, false
 	}
 
-	// Move to end (most recently used)
 	c.mu.Lock()
 	c.moveToEnd(key)
 	c.mu.Unlock()
@@ -51,12 +47,10 @@ func (c *LRUCache) Get(key string) (interface{}, bool) {
 	return item.value, true
 }
 
-// Set stores a value in the cache with a TTL.
 func (c *LRUCache) Set(key string, value interface{}, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// If key exists, update it
 	if _, ok := c.items[key]; ok {
 		c.items[key] = &cacheItem{
 			value:     value,
@@ -67,7 +61,6 @@ func (c *LRUCache) Set(key string, value interface{}, ttl time.Duration) {
 		return
 	}
 
-	// If at capacity, evict oldest
 	if len(c.items) >= c.maxItems {
 		c.evict()
 	}
@@ -80,7 +73,32 @@ func (c *LRUCache) Set(key string, value interface{}, ttl time.Duration) {
 	c.order = append(c.order, key)
 }
 
-// Delete removes a value from the cache.
+func (c *LRUCache) SetWithEviction(key string, value interface{}, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, ok := c.items[key]; ok {
+		c.items[key] = &cacheItem{
+			value:     value,
+			expiresAt: time.Now().Add(ttl),
+			ttl:       ttl,
+		}
+		c.moveToEnd(key)
+		return
+	}
+
+	if len(c.items) >= c.maxItems {
+		c.evictOldest()
+	}
+
+	c.items[key] = &cacheItem{
+		value:     value,
+		expiresAt: time.Now().Add(ttl),
+		ttl:       ttl,
+	}
+	c.order = append(c.order, key)
+}
+
 func (c *LRUCache) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -94,7 +112,6 @@ func (c *LRUCache) Delete(key string) {
 	}
 }
 
-// Cleanup removes expired entries.
 func (c *LRUCache) Cleanup() {
 	now := time.Now()
 	c.mu.Lock()
@@ -113,14 +130,33 @@ func (c *LRUCache) Cleanup() {
 	}
 }
 
-// Len returns the number of items in the cache.
+func (c *LRUCache) CleanupExpired() int {
+	now := time.Now()
+	count := 0
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for key, item := range c.items {
+		if now.After(item.expiresAt) {
+			delete(c.items, key)
+			for i, k := range c.order {
+				if k == key {
+					c.order = append(c.order[:i], c.order[i+1:]...)
+					break
+				}
+			}
+			count++
+		}
+	}
+	return count
+}
+
 func (c *LRUCache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.items)
 }
 
-// Keys returns all keys in the cache.
 func (c *LRUCache) Keys() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -136,7 +172,6 @@ func (c *LRUCache) Keys() []string {
 	return keys
 }
 
-// Flush clears all items from the cache.
 func (c *LRUCache) Flush() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -144,8 +179,6 @@ func (c *LRUCache) Flush() {
 	c.order = c.order[:0]
 }
 
-// moveToEnd moves a key to the end of the order list (most recently used).
-// Must be called with mu held.
 func (c *LRUCache) moveToEnd(key string) {
 	for i, k := range c.order {
 		if k == key {
@@ -156,10 +189,49 @@ func (c *LRUCache) moveToEnd(key string) {
 	c.order = append(c.order, key)
 }
 
-// evict removes the oldest item from the cache.
-// Must be called with mu held.
 func (c *LRUCache) evict() {
 	if len(c.order) > 0 {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.items, oldest)
+	}
+}
+
+func (c *LRUCache) evictOldest() {
+	if len(c.order) == 0 {
+		return
+	}
+
+	oldestKey := c.order[0]
+	c.order = c.order[1:]
+
+	if item, ok := c.items[oldestKey]; ok {
+		_ = item.ttl
+		delete(c.items, oldestKey)
+	}
+}
+
+func (c *LRUCache) evictWithTTL() {
+	now := time.Now()
+
+	expiredKeys := make([]string, 0)
+	for key, item := range c.items {
+		if now.After(item.expiresAt) {
+			expiredKeys = append(expiredKeys, key)
+		}
+	}
+
+	for _, key := range expiredKeys {
+		delete(c.items, key)
+		for i, k := range c.order {
+			if k == key {
+				c.order = append(c.order[:i], c.order[i+1:]...)
+				break
+			}
+		}
+	}
+
+	if len(c.items) >= c.maxItems && len(c.order) > 0 {
 		oldest := c.order[0]
 		c.order = c.order[1:]
 		delete(c.items, oldest)

@@ -36,36 +36,39 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 
 	sessionTimeout := ss.config.Session.Timeout()
 
-	// Get user's existing sessions
 	existingSessions, err := ss.store.GetUserSessions(ctx, event.UserID, true)
 	if err != nil {
 		return nil, err
 	}
 
-	// Find the most recent active session
 	var activeSession *model.Session
+	var allSessionCount int
 	for _, s := range existingSessions {
-		if s.IsActive() {
+		if s.State == model.SessionActive {
 			if activeSession == nil || s.LastEventTime.After(activeSession.LastEventTime) {
 				activeSession = s
 			}
 		}
+		allSessionCount++
 	}
 
-	// Check if we should use existing session or create new one
 	if activeSession != nil {
 		timeSinceLastEvent := event.Timestamp.Sub(activeSession.LastEventTime)
 		if timeSinceLastEvent <= sessionTimeout {
-			// Update existing session
 			activeSession.AddEvent(event, sessionTimeout)
 			if err := ss.store.UpdateSession(ctx, activeSession); err != nil {
 				return nil, err
+			}
+			if allSessionCount > ss.config.Session.MinEventsForSession {
+				activeSession.UserType = model.UserReturning
+				if err := ss.store.UpdateSession(ctx, activeSession); err != nil {
+					return nil, err
+				}
 			}
 			return activeSession, nil
 		}
 	}
 
-	// Create new session
 	session := model.NewSession(event.UserID, event.DeviceType, sessionTimeout)
 	if event.Type == model.EventPageView {
 		session.Pages = []string{event.PageURL}
@@ -75,6 +78,10 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 	session.Referrer = event.Referrer
 	session.Country = event.Country
 	session.UserType = model.UserNew
+
+	if activeSession != nil && event.Timestamp.Sub(activeSession.CreatedAt) > sessionTimeout {
+		session.UserType = model.UserReturning
+	}
 
 	if err := ss.store.CreateSession(ctx, session); err != nil {
 		return nil, err
@@ -166,13 +173,23 @@ func (ss *SessionService) ReclassifyUserType(ctx context.Context, userID string)
 		return err
 	}
 
+	if len(sessions) == 0 {
+		return nil
+	}
+
 	userType := model.UserNew
 	if len(sessions) > ss.config.Session.MinEventsForSession {
 		userType = model.UserReturning
 	}
 
+	sessionTimeout := ss.config.Session.Timeout()
+	now := time.Now()
 	for _, s := range sessions {
 		if s.State == model.SessionActive {
+			timeSinceStart := now.Sub(s.StartTime)
+			if timeSinceStart > sessionTimeout && userType == model.UserNew {
+				userType = model.UserReturning
+			}
 			s.UserType = userType
 			if err := ss.store.UpdateSession(ctx, s); err != nil {
 				return err
@@ -181,4 +198,26 @@ func (ss *SessionService) ReclassifyUserType(ctx context.Context, userID string)
 	}
 
 	return nil
+}
+
+// ClassifyUserBySessionTime determines user type based on session creation time.
+func (ss *SessionService) ClassifyUserBySessionTime(ctx context.Context, userID string) (model.UserType, error) {
+	sessions, err := ss.store.GetUserSessions(ctx, userID, true)
+	if err != nil {
+		return model.UserNew, err
+	}
+
+	if len(sessions) == 0 {
+		return model.UserNew, nil
+	}
+
+	sessionTimeout := ss.config.Session.Timeout()
+	now := time.Now()
+	for _, s := range sessions {
+		if now.Sub(s.CreatedAt) > sessionTimeout {
+			return model.UserReturning, nil
+		}
+	}
+
+	return model.UserNew, nil
 }

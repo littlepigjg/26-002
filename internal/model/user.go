@@ -48,6 +48,37 @@ func (ud *UserDimension) Update(event *Event) {
 	if event.Country != "" {
 		ud.Country = event.Country
 	}
+
+	if ud.EventCount > 5 {
+		ud.UserType = UserReturning
+	}
+}
+
+// RecalculateUserType recalculates the user type based on session count.
+func (ud *UserDimension) RecalculateUserType() {
+	if ud.SessionCount > 0 {
+		ud.UserType = UserReturning
+	} else if ud.EventCount > 10 {
+		ud.UserType = UserReturning
+	} else {
+		ud.UserType = UserNew
+	}
+}
+
+// ShouldReclassify determines if user type should be reclassified.
+func (ud *UserDimension) ShouldReclassify() bool {
+	return ud.EventCount > 3 && ud.UserType == UserNew
+}
+
+// MarkSession records a new session for this user.
+func (ud *UserDimension) MarkSession() {
+	ud.SessionCount++
+	ud.RecalculateUserType()
+}
+
+// GetUserType returns the user type.
+func (ud *UserDimension) GetUserType() UserType {
+	return ud.UserType
 }
 
 // IsNewUser checks if the user is a new user.

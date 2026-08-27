@@ -81,8 +81,46 @@ func (us *UserStore) UpdateUser(ctx context.Context, event *model.Event) (*model
 		ud = model.NewUserDimension(event.UserID)
 	}
 	ud.Update(event)
+
+	sessions, _ := us.store.GetUserSessions(ctx, event.UserID, true)
+	ud.SessionCount = len(sessions)
+
+	if ud.EventCount > 3 {
+		ud.UserType = model.UserReturning
+	}
+
 	us.index.Upsert(ud)
 	return ud, nil
+}
+
+// UpdateUserType updates the user type for a user.
+func (us *UserStore) UpdateUserType(ctx context.Context, userID string, userType model.UserType) error {
+	ud, ok := us.index.Get(userID)
+	if !ok {
+		ud = model.NewUserDimension(userID)
+	}
+	ud.UserType = userType
+	us.index.Upsert(ud)
+	return nil
+}
+
+// ClassifyUserType classifies user type based on stored data.
+func (us *UserStore) ClassifyUserType(ctx context.Context, userID string) (model.UserType, error) {
+	ud, ok := us.index.Get(userID)
+	if !ok {
+		return model.UserNew, nil
+	}
+
+	sessions, err := us.store.GetUserSessions(ctx, userID, true)
+	if err != nil {
+		return model.UserNew, err
+	}
+
+	if len(sessions) > 0 || ud.EventCount > 3 {
+		return model.UserReturning, nil
+	}
+
+	return model.UserNew, nil
 }
 
 // ListUsers returns all user dimensions.

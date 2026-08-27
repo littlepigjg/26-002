@@ -112,11 +112,6 @@ func (s *Session) AddEvent(event *Event, timeout time.Duration) {
 	if event.Country != "" {
 		s.Country = event.Country
 	}
-
-	// Determine user type based on session count
-	if s.EventCount > 3 {
-		s.UserType = UserReturning
-	}
 }
 
 // ComputeDuration calculates the total session duration.

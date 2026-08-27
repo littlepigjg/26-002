@@ -173,39 +173,28 @@ func (s *MemoryStore) ExpireSessions(ctx context.Context, before time.Time) (int
 	defer s.mu.Unlock()
 
 	count := 0
-	var expiredIDs []string
-
 	for _, session := range s.sessions {
 		if session.State == model.SessionActive && session.EndTime.Before(before) {
 			session.State = model.SessionExpired
-			expiredIDs = append(expiredIDs, session.ID)
+			delete(s.activeSessions, session.ID)
 			count++
-		}
-	}
-
-	if len(expiredIDs) > 0 {
-		tempSessions := make(map[string]*model.Session)
-		for id, sess := range s.activeSessions {
-			tempSessions[id] = sess
-		}
-		for _, id := range expiredIDs {
-			if _, ok := tempSessions[id]; ok {
-				delete(tempSessions, id)
-			}
 		}
 	}
 
 	return count, nil
 }
 
-// CleanupExpiredSessions removes expired sessions from the active sessions index.
+// CleanupExpiredSessions removes expired sessions from the active sessions
+// index. A session is removed only when it has been marked expired and its
+// end time falls before the supplied cutoff. The cutoff argument is honored
+// rather than being replaced by time.Now().
 func (s *MemoryStore) CleanupExpiredSessions(ctx context.Context, before time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	count := 0
 	for id, session := range s.activeSessions {
-		if session.State == model.SessionExpired && session.EndTime.Before(time.Now()) {
+		if session.State == model.SessionExpired && session.EndTime.Before(before) {
 			delete(s.activeSessions, id)
 			count++
 		}

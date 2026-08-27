@@ -1,12 +1,14 @@
 #!/bin/bash
 # UBAAS Docker Build Script
 # This script builds the Docker image for the UBAAS application.
+# Usage: ./build_benzhi_docker.sh [IMAGE_NAME] [IMAGE_TAG] [PLATFORM]
 
 set -e
 
-# Configuration
-IMAGE_NAME="ubaas-server"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+# Configuration - accept positional arguments
+IMAGE_NAME="${1:-ubaas-server}"
+IMAGE_TAG="${2:-latest}"
+PLATFORM="${3:-}"
 DOCKERFILE="${DOCKERFILE:-benzhi.Dockerfile}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 REGISTRY="${REGISTRY:-}"
@@ -50,6 +52,9 @@ log_info "Starting UBAAS Docker image build..."
 log_info "Dockerfile: $DOCKERFILE"
 log_info "Context directory: $CONTEXT_DIR"
 log_info "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+if [ -n "$PLATFORM" ]; then
+    log_info "Platform: $PLATFORM"
+fi
 
 # Check if Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
@@ -58,12 +63,25 @@ if [ ! -f "$DOCKERFILE" ]; then
 fi
 
 # Build the Docker image
-docker build \
-    --file "$DOCKERFILE" \
-    --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
-    --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
-    "$CONTEXT_DIR"
+if [ -n "$PLATFORM" ]; then
+    docker buildx build \
+        --platform "$PLATFORM" \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+        --pull=false \
+        --load \
+        "$CONTEXT_DIR"
+else
+    docker build \
+        --file "$DOCKERFILE" \
+        --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+        --pull=never \
+        "$CONTEXT_DIR"
+fi
 
 BUILD_EXIT_CODE=$?
 

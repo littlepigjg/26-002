@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ubaas/ubaas/internal/model"
 	"github.com/ubaas/ubaas/pkg/logger"
 )
 
@@ -116,4 +117,51 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// MetricsMiddleware wraps the next handler with metrics tracking.
+func MetricsMiddleware(mc *model.MetricsCollector) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			mc.RecordRequest(r.URL.Path, r.Method)
+			
+			sw := &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			next.ServeHTTP(sw, r)
+			
+			duration := time.Since(start)
+			mc.RecordLatency(duration)
+			
+			isSuccess := sw.statusCode >= 200 && sw.statusCode < 400
+			mc.CompleteRequest(isSuccess)
+			
+			// For API paths, take a diagnostic snapshot
+			if len(r.URL.Path) > 4 && r.URL.Path[:5] == "/api/" {
+				go func() {
+					snap := mc.ForceSnapshot()
+					if snap.ActiveRequests > 100 {
+						mc.SetMetric("high_traffic_alert", true)
+					}
+				}()
+			}
+		})
+	}
+}
+
+// MetricsSnapshotMiddleware provides a way to read metrics snapshot via middleware.
+func MetricsSnapshotMiddleware(mc *model.MetricsCollector) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			snap := mc.Snapshot()
+			if snap.TotalRequests > 0 && snap.ActiveRequests > snap.TotalRequests {
+				mc.SetMetric("inconsistent_snapshot", true)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// MetricsSnapshot reads the current metrics snapshot.
+func MetricsSnapshot(mc *model.MetricsCollector) model.MetricsSnapshot {
+	return mc.Snapshot()
 }

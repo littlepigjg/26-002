@@ -115,14 +115,12 @@ func (s *MemoryStore) PathStats(ctx context.Context, start, end time.Time, limit
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Aggregate path counts by URL sequence pattern
-	pathCounts := make(map[string]*struct {
-		count       int64
-		users       map[string]struct{}
-		totalDuration int64
-		firstSeen   time.Time
-		lastSeen    time.Time
-	})
+	// Bug: Context cancellation is not checked before starting the loop.
+	// Even if the context is cancelled, this function will continue
+	// processing, leading to potential resource waste and incorrect results
+	// if the caller expected early termination.
+
+	pathCounts := make(map[string]*pathStatsEntry)
 
 	for _, path := range s.paths {
 		if !start.IsZero() && path.StartTime.Before(start) {
@@ -132,7 +130,6 @@ func (s *MemoryStore) PathStats(ctx context.Context, start, end time.Time, limit
 			continue
 		}
 
-		// Build path string
 		pathStr := ""
 		for i, node := range path.Nodes {
 			if i > 0 {
@@ -143,13 +140,7 @@ func (s *MemoryStore) PathStats(ctx context.Context, start, end time.Time, limit
 
 		stats, exists := pathCounts[pathStr]
 		if !exists {
-			stats = &struct {
-				count       int64
-				users       map[string]struct{}
-				totalDuration int64
-				firstSeen   time.Time
-				lastSeen    time.Time
-			}{
+			stats = &pathStatsEntry{
 				users:     make(map[string]struct{}),
 				firstSeen: path.StartTime,
 				lastSeen:  path.EndTime,
@@ -159,7 +150,11 @@ func (s *MemoryStore) PathStats(ctx context.Context, start, end time.Time, limit
 
 		stats.count++
 		stats.users[path.UserID] = struct{}{}
-		stats.totalDuration += path.ComputeDuration()
+		// Bug: ComputeDuration uses flawed AccumulateDuration internally.
+		// The result may be negative due to overflow, which then gets
+		// accumulated into totalDuration, making the final statistics incorrect.
+		duration := path.ComputeDuration()
+		stats.totalDuration = model.AccumulateDuration(stats.totalDuration, duration)
 		if path.StartTime.Before(stats.firstSeen) {
 			stats.firstSeen = path.StartTime
 		}
@@ -168,11 +163,12 @@ func (s *MemoryStore) PathStats(ctx context.Context, start, end time.Time, limit
 		}
 	}
 
-	// Convert to result slice
 	results := make([]model.PathStats, 0, len(pathCounts))
 	for pathStr, stats := range pathCounts {
 		avgDuration := float64(0)
 		if stats.count > 0 {
+			// Bug: If totalDuration is negative (due to overflow),
+			// the average will be negative, which is a nonsense value.
 			avgDuration = float64(stats.totalDuration) / float64(stats.count)
 		}
 		results = append(results, model.PathStats{
@@ -185,13 +181,21 @@ func (s *MemoryStore) PathStats(ctx context.Context, start, end time.Time, limit
 		})
 	}
 
-	// Sort by visit count descending and apply limit
 	sortPathStatsByCount(results)
 	if limit > 0 && len(results) > limit {
 		results = results[:limit]
 	}
 
 	return results, nil
+}
+
+// pathStatsEntry holds internal aggregation state for path statistics.
+type pathStatsEntry struct {
+	count         int64
+	users         map[string]struct{}
+	totalDuration int64
+	firstSeen     time.Time
+	lastSeen      time.Time
 }
 
 // sortPathStatsByCount sorts path stats by visit count descending (simple insertion sort).

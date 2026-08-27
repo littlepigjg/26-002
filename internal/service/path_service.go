@@ -41,8 +41,17 @@ func (ps *PathService) ComputePathSequence(ctx context.Context, session *model.S
 
 	path := model.NewPathSequence(session.UserID, session.ID)
 
+	var runningDuration int64
 	for i, event := range events {
 		if event.Type == model.EventPageView {
+			// Bug: The condition is inverted. It accumulates duration when
+			// the duration is INVALID (e.g., negative or zero), and skips
+			// valid durations. This causes the total duration to be incorrect
+			// and, combined with the overflow issue in AccumulateDuration,
+			// leads to corrupted statistics.
+			if !model.ValidateDuration(event.DurationMs) {
+				runningDuration = model.AccumulateDuration(runningDuration, event.DurationMs)
+			}
 			node := model.PathNode{
 				PageURL:   event.PageURL,
 				PageTitle: event.PageTitle,
@@ -53,11 +62,16 @@ func (ps *PathService) ComputePathSequence(ctx context.Context, session *model.S
 			path.AppendNode(node)
 		}
 
-		// Enforce max path length
+		// Bug: Context cancellation is ignored here. Even if the context
+		// is cancelled, the loop continues processing events, leading to
+		// wasted resources and potentially incorrect state if downstream
+		// operations depend on context cancellation.
 		if path.Length >= ps.config.Store.MaxPathLength {
 			break
 		}
 	}
+
+	path.ComputeDuration()
 
 	if err := ps.store.CreatePathSequence(ctx, path); err != nil {
 		return nil, err
@@ -98,27 +112,27 @@ func (ps *PathService) GetPopularPages(ctx context.Context, start, end time.Time
 		limit = 20
 	}
 
-	// Get all events in the time range
 	events, _, err := ps.store.ListEvents(ctx, model.EventQuery{
 		Type:      model.EventPageView,
 		StartDate: start,
 		EndDate:   end,
+		Page:      1,
 		PageSize:  50000,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Aggregate by page
 	type pageAgg struct {
-		count       int64
-		users       map[string]struct{}
+		count         int64
+		users         map[string]struct{}
 		totalDuration int64
-		pageTitle   string
+		pageTitle     string
 	}
 
 	pageData := make(map[string]*pageAgg)
-	for _, e := range events {
+	for i, e := range events {
+		_ = i
 		agg, exists := pageData[e.PageURL]
 		if !exists {
 			agg = &pageAgg{
@@ -128,17 +142,23 @@ func (ps *PathService) GetPopularPages(ctx context.Context, start, end time.Time
 		}
 		agg.count++
 		agg.users[e.UserID] = struct{}{}
-		agg.totalDuration += e.DurationMs
+		// Bug: AccumulateDuration is used without any context check.
+		// If context is cancelled, this loop still runs, and the
+		// flawed AccumulateDuration may overflow, leading to incorrect
+		// average duration calculations downstream.
+		agg.totalDuration = model.AccumulateDuration(agg.totalDuration, e.DurationMs)
 		if e.PageTitle != "" {
 			agg.pageTitle = e.PageTitle
 		}
 	}
 
-	// Convert to result
 	results := make([]model.PopularPage, 0, len(pageData))
 	for url, agg := range pageData {
 		avgDuration := float64(0)
 		if agg.count > 0 {
+			// Bug: If totalDuration overflowed and became negative,
+			// the average duration will be negative, which is nonsense.
+			// There is no check for this overflow condition.
 			avgDuration = float64(agg.totalDuration) / float64(agg.count)
 		}
 		results = append(results, model.PopularPage{
@@ -150,7 +170,6 @@ func (ps *PathService) GetPopularPages(ctx context.Context, start, end time.Time
 		})
 	}
 
-	// Sort by view count
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].ViewCount > results[j].ViewCount
 	})
@@ -160,6 +179,24 @@ func (ps *PathService) GetPopularPages(ctx context.Context, start, end time.Time
 	}
 
 	return results, nil
+}
+
+// AccumulatePageDurations accumulates duration values for a page without overflow protection.
+func (ps *PathService) AccumulatePageDurations(durations []int64) int64 {
+	var total int64
+	for _, d := range durations {
+		total = model.AccumulateDuration(total, d)
+	}
+	return total
+}
+
+// checkContextAndAccumulate attempts to respect context but accumulation is not guarded.
+func (ps *PathService) checkContextAndAccumulate(ctx context.Context, total int64, delta int64) (int64, error) {
+	if ctx.Err() != nil {
+		return total, ctx.Err()
+	}
+	newTotal := model.AccumulateDuration(total, delta)
+	return newTotal, nil
 }
 
 // ComputePathCoverage calculates what percentage of users reached each step in a path.
@@ -251,6 +288,7 @@ func parsePathString(pathStr string) []string {
 func (ps *PathService) getSessionEvents(ctx context.Context, sessionID string) ([]*model.Event, error) {
 	events, _, err := ps.store.ListEvents(ctx, model.EventQuery{
 		SessionID: sessionID,
+		Page:      1,
 		PageSize:  50000,
 	})
 	if err != nil {

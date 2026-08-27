@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o ubaas-server ./cmd/server/
 FROM alpine:3.19
 
 # Install required runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata wget
 
 # Create app directory
 WORKDIR /app

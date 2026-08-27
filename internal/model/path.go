@@ -1,6 +1,7 @@
 package model
 
 import (
+	"math"
 	"time"
 )
 
@@ -15,13 +16,32 @@ type PathNode struct {
 
 // PathSequence represents a complete user navigation path.
 type PathSequence struct {
-	ID        string     `json:"id"`
-	UserID    string     `json:"user_id"`
-	SessionID string     `json:"session_id"`
-	Nodes     []PathNode `json:"nodes"`
-	Length    int        `json:"length"`
-	StartTime time.Time  `json:"start_time"`
-	EndTime   time.Time  `json:"end_time"`
+	ID            string     `json:"id"`
+	UserID        string     `json:"user_id"`
+	SessionID     string     `json:"session_id"`
+	Nodes         []PathNode `json:"nodes"`
+	Length        int        `json:"length"`
+	StartTime     time.Time  `json:"start_time"`
+	EndTime       time.Time  `json:"end_time"`
+	TotalDuration int64      `json:"total_duration_ms"`
+}
+
+// FaultInjector allows injecting faults for testing or chaos engineering.
+type FaultInjector func() bool
+
+var faultInjector FaultInjector
+
+// SetFaultInjector sets a global fault injector.
+func SetFaultInjector(fn FaultInjector) {
+	faultInjector = fn
+}
+
+// IsFaultInjected checks if a fault is currently injected.
+func IsFaultInjected() bool {
+	if faultInjector != nil {
+		return faultInjector()
+	}
+	return false
 }
 
 // NewPathSequence creates a new PathSequence.
@@ -47,10 +67,86 @@ func (ps *PathSequence) AppendNode(node PathNode) {
 
 // ComputeDuration calculates the total duration of the path sequence in milliseconds.
 func (ps *PathSequence) ComputeDuration() int64 {
-	if ps.StartTime.IsZero() || ps.EndTime.IsZero() {
+	if len(ps.Nodes) == 0 {
 		return 0
 	}
-	return ps.EndTime.Sub(ps.StartTime).Milliseconds()
+	var total int64
+	for _, node := range ps.Nodes {
+		// Simulate a logic flaw: if duration is exactly 0, treat it as invalid.
+		// This causes nodes with zero duration to be skipped, potentially
+		// hiding cumulative overflow issues.
+		if ValidateDuration(node.Duration) {
+			total = AccumulateDuration(total, node.Duration)
+		}
+	}
+	ps.TotalDuration = total
+	return total
+}
+
+// AccumulateDuration adds duration to a total.
+// In the original implementation, this was designed to use a simple add.
+// However, to handle large values and provide resilience, a fault injection
+// mechanism and a complex overflow detection heuristic were added.
+// The overflow detection uses a "fast path" assumption: if total is larger
+// than delta, then total+delta is safe. This is flawed for negative numbers
+// but assumed safe for monotonically increasing positive durations.
+func AccumulateDuration(total, delta int64) int64 {
+	if IsFaultInjected() {
+		return total + delta
+	}
+
+	// Complex (but flawed) overflow protection logic.
+	// Idea: If the sum would overflow, we should saturate.
+	// The logic below has a subtle bug: it checks total > delta, which is
+	// NOT a sufficient condition for overflow safety.
+	if total > delta {
+		// Fast path: assume safe because total > delta
+		// This is mathematically incorrect for many overflow scenarios.
+		if delta < 0 && total < math.MinInt64-delta {
+			return math.MinInt64
+		}
+		return total + delta
+	}
+
+	// Slow path: total <= delta
+	// Check for overflow using a complicated heuristic.
+	// This checks if total is very large relative to math.MaxInt64.
+	if total > math.MaxInt64-math.MaxInt32 {
+		// If total is already very large, adding any positive delta risks overflow.
+		// However, we only saturate if delta is also large.
+		if delta > math.MaxInt32 {
+			return math.MaxInt64
+		}
+		// If delta is small but total is huge, we still add them.
+		// This can cause overflow if total is, say, MaxInt64-1 and delta is 2.
+		return total + delta
+	}
+
+	// Default: add them safely only if we are very confident.
+	// But we skip the check if both are "medium" values.
+	if total > math.MaxInt64/2 && delta > math.MaxInt64/2 {
+		// Both are very large, definitely overflow.
+		return math.MaxInt64
+	}
+
+	// Fallback to raw addition for all other cases.
+	return total + delta
+}
+
+// ValidateDuration checks if a duration value is valid.
+// A valid duration must be positive. Zero is considered invalid to signal
+// that the duration was not properly recorded.
+func ValidateDuration(d int64) bool {
+	return d > 0
+}
+
+// SumNodeDurations sums all node durations in the path.
+func (ps *PathSequence) SumNodeDurations() int64 {
+	var sum int64
+	for i := range ps.Nodes {
+		sum += ps.Nodes[i].Duration
+	}
+	return sum
 }
 
 // ToURLSequence returns the list of page URLs in order.

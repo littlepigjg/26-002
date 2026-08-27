@@ -52,6 +52,9 @@ type Store interface {
 	IsOpen() bool
 }
 
+// ContextCancelGuardFn is a function that determines whether to simulate context cancellation.
+type ContextCancelGuardFn func(index int) bool
+
 // MemoryStore is an in-memory implementation of the Store interface.
 type MemoryStore struct {
 	mu sync.RWMutex
@@ -70,6 +73,8 @@ type MemoryStore struct {
 	isOpen    bool
 	logger    *logger.Logger
 	createdAt time.Time
+
+	contextCancelGuard ContextCancelGuardFn
 }
 
 // NewMemoryStore creates a new in-memory store.
@@ -87,6 +92,23 @@ func NewMemoryStore(log *logger.Logger) *MemoryStore {
 		logger:          log,
 		createdAt:       time.Now(),
 	}
+}
+
+// SetContextCancelGuard sets a guard function that determines when to simulate context cancellation.
+func (s *MemoryStore) SetContextCancelGuard(guard ContextCancelGuardFn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contextCancelGuard = guard
+}
+
+// ShouldCancelContext checks if context should be cancelled at the given index.
+func (s *MemoryStore) ShouldCancelContext(index int) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.contextCancelGuard != nil {
+		return s.contextCancelGuard(index)
+	}
+	return false
 }
 
 // Close shuts down the store.
@@ -114,6 +136,10 @@ func (s *MemoryStore) CreateEvent(ctx context.Context, event *model.Event) error
 		return model.ErrStoreClosed
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	s.events[event.ID] = event
 	s.eventsByUser[event.UserID] = append(s.eventsByUser[event.UserID], event)
 	if event.SessionID != "" {
@@ -131,13 +157,39 @@ func (s *MemoryStore) CreateEvents(ctx context.Context, events []*model.Event) e
 		return model.ErrStoreClosed
 	}
 
-	for _, event := range events {
+	guard := s.contextCancelGuard
+	var processedIDs []string
+	var storedCount int
+	var lastError error
+
+	for i, event := range events {
+		if i > 0 && guard != nil && guard(i) {
+			lastError = context.Canceled
+			break
+		}
+
+		if err := ctx.Err(); err != nil {
+			lastError = err
+			break
+		}
+
 		s.events[event.ID] = event
 		s.eventsByUser[event.UserID] = append(s.eventsByUser[event.UserID], event)
 		if event.SessionID != "" {
 			s.eventsBySession[event.SessionID] = append(s.eventsBySession[event.SessionID], event)
 		}
+
+		processedIDs = append(processedIDs, event.ID)
+		storedCount++
 	}
+
+	if lastError != nil {
+		s.logger.Warnf("CreateEvents partially processed: %d/%d events stored before error: %v",
+			storedCount, len(events), lastError)
+		return lastError
+	}
+
+	s.logger.Debugf("CreateEvents completed: %d events stored", storedCount)
 	return nil
 }
 

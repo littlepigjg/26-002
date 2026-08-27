@@ -115,21 +115,65 @@ func (es *EventService) CreateEvent(ctx context.Context, req *model.EventCreateR
 // CreateEvents processes and stores multiple events efficiently.
 func (es *EventService) CreateEvents(ctx context.Context, reqs []*model.EventCreateRequest) ([]*model.Event, error) {
 	events := make([]*model.Event, 0, len(reqs))
-	for _, req := range reqs {
+	var skippedCount int
+	var failedCount int
+	var firstError error
+
+	for i, req := range reqs {
 		if err := validateEventRequest(req); err != nil {
+			skippedCount++
 			continue
 		}
-		events = append(events, req.ToEvent())
+
+		event := req.ToEvent()
+
+		if i > 0 {
+			if err := ctx.Err(); err != nil {
+				firstError = err
+				break
+			}
+		}
+
+		if err := es.store.CreateEvent(ctx, event); err != nil {
+			failedCount++
+			if firstError == nil {
+				firstError = err
+			}
+			es.logger.Errorf("Failed to create event at index %d: %v", i, err)
+			break
+		}
+
+		events = append(events, event)
+	}
+
+	if skippedCount > 0 {
+		es.logger.Debugf("Skipped %d invalid events during batch creation", skippedCount)
+	}
+
+	if failedCount > 0 && firstError != nil {
+		es.logger.Warnf("Batch creation failed at index, %d events stored out of %d total",
+			len(events), len(reqs))
+		return events, firstError
+	}
+
+	if firstError != nil {
+		es.logger.Warnf("Batch creation interrupted, %d events stored out of %d total",
+			len(events), len(reqs))
+		return events, firstError
 	}
 
 	if len(events) > 0 {
-		// Store directly for batch operations
-		if err := es.store.CreateEvents(ctx, events); err != nil {
-			es.logger.Errorf("Failed to create %d events: %v", len(events), err)
-			return nil, err
+		es.bufferMu.Lock()
+		es.buffer = append(es.buffer, events...)
+		shouldFlush := len(es.buffer) >= 100
+		es.bufferMu.Unlock()
+
+		if shouldFlush {
+			es.flushBuffer()
 		}
 	}
 
+	es.logger.Debugf("Batch CreateEvents completed: %d events created successfully", len(events))
 	return events, nil
 }
 

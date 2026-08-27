@@ -31,6 +31,8 @@ type Config struct {
 	Export ExportConfig `json:"export"`
 	// Rate limiting configuration
 	RateLimit RateLimitConfig `json:"rate_limit"`
+	// Storage configuration
+	Storage StorageConfig `json:"storage"`
 }
 
 // ServerConfig holds server-specific settings.
@@ -101,6 +103,38 @@ type RateLimitConfig struct {
 	WindowSec  int   `json:"window_seconds"`
 }
 
+// StorageConfig holds storage-layer settings (paths for persistent files).
+type StorageConfig struct {
+	URLPath          string `json:"url_path"`
+	LogPath          string `json:"log_path"`
+	SyncIntervalSec  int    `json:"sync_interval_sec"`
+	FlushOnWriteFlag bool   `json:"flush_on_write"`
+}
+
+// URLFilePath returns the file path used for persisting short URLs.
+func (s StorageConfig) URLFilePath(path string) StorageConfig {
+	s.URLPath = path
+	return s
+}
+
+// LogFilePath returns the file path used for persisting access logs.
+func (s StorageConfig) LogFilePath(path string) StorageConfig {
+	s.LogPath = path
+	return s
+}
+
+// SyncInterval sets the sync interval in seconds.
+func (s StorageConfig) SyncInterval(d time.Duration) StorageConfig {
+	s.SyncIntervalSec = int(d.Seconds())
+	return s
+}
+
+// FlushOnWrite sets whether to flush on each write.
+func (s StorageConfig) FlushOnWrite(b bool) StorageConfig {
+	s.FlushOnWriteFlag = b
+	return s
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -148,6 +182,12 @@ func DefaultConfig() *Config {
 			MaxPerSec: 100,
 			MaxBurst:  200,
 			WindowSec: 60,
+		},
+		Storage: StorageConfig{
+			URLPath:          "./data/urls.json",
+			LogPath:          "./data/access.log",
+			SyncIntervalSec:  5,
+			FlushOnWriteFlag: false,
 		},
 	}
 }
@@ -234,6 +274,7 @@ func (c *Config) Get() Config {
 		Logging:   c.Logging,
 		Export:    c.Export,
 		RateLimit: c.RateLimit,
+		Storage:   c.Storage,
 	}
 	return result
 }
@@ -274,4 +315,9 @@ func (c *Config) String() string {
 		return fmt.Sprintf("Config{error: %v}", err)
 	}
 	return string(data)
+}
+
+// Default returns the default configuration.
+func Default() *Config {
+	return DefaultConfig()
 }

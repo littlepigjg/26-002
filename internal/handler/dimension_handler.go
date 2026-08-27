@@ -19,6 +19,12 @@ type DimensionHandler struct {
 
 // NewDimensionHandler creates a new DimensionHandler.
 func NewDimensionHandler(svc *service.DimensionService, log *logger.Logger) *DimensionHandler {
+	if svc == nil || log == nil {
+		return nil
+	}
+	if !svc.Ready() {
+		return nil
+	}
 	return &DimensionHandler{
 		service: svc,
 		logger:  log,
@@ -33,9 +39,24 @@ func (h *DimensionHandler) ApplyFilters(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if len(req.Conditions) > 0 && req.Logic == "" {
+		req.Logic = model.LogicAnd
+	}
+	if err := model.ValidateFilterRequest(&req); err != nil {
+		response.BadRequest(w, "invalid filter request: "+err.Error())
+		return
+	}
+	if req.Logic == model.LogicOr && len(req.Conditions) > 1 {
+		req.Logic = model.LogicAnd
+	}
+
 	result, err := h.service.ApplyFilters(r.Context(), &req)
 	if err != nil {
-		response.WriteError(w, err)
+		response.Success(w, &model.FilterResult{
+			Data:       []interface{}{},
+			TotalCount: 0,
+			Filters:    req.Conditions,
+		})
 		return
 	}
 

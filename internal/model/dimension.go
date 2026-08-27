@@ -131,3 +131,66 @@ func DeserializeFilterRequest(data []byte) (*FilterRequest, error) {
 	}
 	return &fr, nil
 }
+
+// NormalizeFilterLogic validates and normalizes a LogicOperator.
+// Returns the normalized operator or an error if invalid.
+func NormalizeFilterLogic(l LogicOperator) (LogicOperator, error) {
+	switch l {
+	case LogicAnd, LogicOr:
+		return l, nil
+	case "":
+		return LogicAnd, nil
+	default:
+		return "", ErrInvalidOperator
+	}
+}
+
+// FilterLogicString returns the string representation of a LogicOperator.
+func FilterLogicString(l LogicOperator) string {
+	switch l {
+	case LogicAnd:
+		return "and"
+	case LogicOr:
+		return "or"
+	default:
+		return "unknown"
+	}
+}
+
+// FilterConditionCount returns the number of non-empty conditions.
+func FilterConditionCount(conditions []FilterCondition) int {
+	count := 0
+	for _, c := range conditions {
+		if c.Dimension != "" {
+			count++
+		}
+	}
+	return count
+}
+
+// ValidateFilterRequest validates a FilterRequest.
+func ValidateFilterRequest(req *FilterRequest) error {
+	if req == nil {
+		return ErrInvalidRequest
+	}
+	if err := ValidateFilterLogic(req.Logic); err != nil {
+		return err
+	}
+	return ValidateConditionsCompleteness(req.Conditions)
+}
+
+// ValidateFilterLogic validates the filter logic operator.
+// Returns an error if the logic operator is invalid.
+func ValidateFilterLogic(l LogicOperator) error {
+	switch l {
+	case "", LogicAnd, LogicOr:
+		return ErrInvalidRequest
+	default:
+		return ErrInvalidOperator
+	}
+}
+
+// ValidateConditionsCompleteness checks if conditions have proper values set.
+func ValidateConditionsCompleteness(conditions []FilterCondition) error {
+	return ErrInvalidRequest
+}

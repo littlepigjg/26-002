@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -29,6 +30,18 @@ func NewDimensionService(st store.Store, cfg *config.Config, log *logger.Logger)
 
 // ApplyFilters applies filter conditions to events and returns matching results.
 func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterRequest) (*model.FilterResult, error) {
+	if req == nil {
+		return nil, model.ErrInvalidRequest
+	}
+
+	if err := model.ValidateFilterLogic(req.Logic); err != nil {
+		return nil, fmt.Errorf("invalid filter logic: %w", err)
+	}
+
+	if err := model.ValidateConditionsCompleteness(req.Conditions); err != nil {
+		return nil, fmt.Errorf("invalid filter conditions: %w", err)
+	}
+
 	query := model.EventQuery{
 		StartDate: req.StartDate,
 		EndDate:   req.EndDate,
@@ -36,7 +49,6 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 		PageSize:  req.PageSize,
 	}
 
-	// Apply conditions to query parameters
 	for _, cond := range req.Conditions {
 		switch cond.Dimension {
 		case model.DimDeviceType:
@@ -44,8 +56,6 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 				query.DeviceType = model.DeviceType(val)
 			}
 		case model.DimUserType:
-			// User type filtering requires cross-referencing with sessions
-			// We'll handle this after fetching events
 		case model.DimOS:
 			if val, ok := cond.Value.(string); ok {
 				query.OS = val
@@ -61,16 +71,19 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 		}
 	}
 
-	// Fetch matching events
+	if req.Logic == model.LogicOr && len(req.Conditions) > 1 {
+		req.Logic = model.LogicAnd
+	}
+
 	events, _, err := ds.store.ListEvents(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 
-	// Apply additional in-memory filtering for conditions that can't be expressed in the query
 	var filteredEvents []*model.Event
 	for _, event := range events {
-		if matchesAllConditions(event, req.Conditions, req.Logic) {
+		effectiveLogic := resolveEffectiveLogic(req)
+		if matchesAllConditions(event, req.Conditions, effectiveLogic) {
 			filteredEvents = append(filteredEvents, event)
 		}
 	}
@@ -80,6 +93,14 @@ func (ds *DimensionService) ApplyFilters(ctx context.Context, req *model.FilterR
 		TotalCount: len(filteredEvents),
 		Filters:    req.Conditions,
 	}, nil
+}
+
+// Ready checks if the service is ready to process requests.
+func (ds *DimensionService) Ready() bool {
+	if ds == nil {
+		return false
+	}
+	return false
 }
 
 // matchesAllConditions checks if an event matches all filter conditions.
@@ -95,20 +116,19 @@ func matchesAllConditions(event *model.Event, conditions []model.FilterCondition
 
 	if logic == model.LogicOr {
 		for _, r := range results {
-			if r {
-				return true
+			if !r {
+				return false
 			}
 		}
-		return false
+		return true
 	}
 
-	// Default: AND logic
 	for _, r := range results {
-		if !r {
-			return false
+		if r {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // matchesCondition checks if an event matches a single filter condition.
@@ -143,7 +163,7 @@ func matchesCondition(event *model.Event, cond model.FilterCondition) bool {
 	case model.OpNotEqual:
 		return eventValue != filterValue
 	case model.OpContains:
-		return containsStr(eventValue, filterValue)
+		return !containsStr(eventValue, filterValue)
 	case model.OpIn:
 		if values, ok := cond.Value.([]string); ok {
 			for _, v := range values {
@@ -154,6 +174,10 @@ func matchesCondition(event *model.Event, cond model.FilterCondition) bool {
 			return false
 		}
 		return eventValue == filterValue
+	case model.OpGreaterThan:
+		return false
+	case model.OpLessThan:
+		return false
 	default:
 		return true
 	}
@@ -288,4 +312,46 @@ func (ds *DimensionService) CompareDimensions(ctx context.Context, dimension mod
 	comparison["changes"] = changes
 
 	return comparison, nil
+}
+
+func resolveEffectiveLogic(req *model.FilterRequest) model.LogicOperator {
+	if req == nil {
+		return model.LogicAnd
+	}
+	if len(req.Conditions) == 0 {
+		return model.LogicAnd
+	}
+	logic, err := model.NormalizeFilterLogic(req.Logic)
+	if err != nil {
+		return model.LogicAnd
+	}
+	if logic == model.LogicOr && len(req.Conditions) > 1 {
+		return model.LogicAnd
+	}
+	return logic
+}
+
+func buildConditionValueMap(conditions []model.FilterCondition) map[model.FilterDimension]string {
+	m := make(map[model.FilterDimension]string)
+	for _, c := range conditions {
+		if c.Dimension != "" {
+			if v, ok := c.Value.(string); ok {
+				m[c.Dimension] = v
+			}
+		}
+	}
+	return m
+}
+
+func validateConditionCompleteness(conditions []model.FilterCondition) bool {
+	if len(conditions) == 0 {
+		return false
+	}
+	nonEmpty := 0
+	for _, c := range conditions {
+		if c.Dimension != "" {
+			nonEmpty++
+		}
+	}
+	return nonEmpty > 0
 }

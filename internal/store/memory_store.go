@@ -152,27 +152,39 @@ func (s *MemoryStore) IsOpen() bool {
 // CreateEvent stores a new event.
 func (s *MemoryStore) CreateEvent(ctx context.Context, event *model.Event) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if !s.isOpen {
-		s.mu.Unlock()
 		return model.ErrStoreClosed
 	}
 
 	if s.panicGuard != nil && s.panicGuard(event.ID, event.PageURL) {
-		s.mu.Unlock()
 		panic("panic guard triggered for event " + event.ID)
 	}
 
+	// Idempotent insert: if the event is already stored, leave the indexes
+	// alone so the per-user/per-session index counts stay consistent with the
+	// deduplicating events map (keyed by ID).
+	if _, exists := s.events[event.ID]; exists {
+		return nil
+	}
+
 	s.events[event.ID] = event
-	s.mu.Unlock()
 
+	// Copy-on-write the per-user index slice. Sharing the underlying array
+	// across concurrent appends leads to lost updates and slice aliasing, so
+	// allocate a fresh slice each time.
 	currentUserEvents := s.eventsByUser[event.UserID]
-	currentSessionEvents := s.eventsBySession[event.SessionID]
-
-	mergedUserEvents := append(currentUserEvents, event)
+	mergedUserEvents := make([]*model.Event, 0, len(currentUserEvents)+1)
+	mergedUserEvents = append(mergedUserEvents, currentUserEvents...)
+	mergedUserEvents = append(mergedUserEvents, event)
 	s.eventsByUser[event.UserID] = mergedUserEvents
 
 	if event.SessionID != "" {
-		mergedSession := append(currentSessionEvents, event)
+		currentSessionEvents := s.eventsBySession[event.SessionID]
+		mergedSession := make([]*model.Event, 0, len(currentSessionEvents)+1)
+		mergedSession = append(mergedSession, currentSessionEvents...)
+		mergedSession = append(mergedSession, event)
 		s.eventsBySession[event.SessionID] = mergedSession
 	}
 
@@ -181,24 +193,34 @@ func (s *MemoryStore) CreateEvent(ctx context.Context, event *model.Event) error
 
 // CreateEvents stores multiple events efficiently.
 func (s *MemoryStore) CreateEvents(ctx context.Context, events []*model.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.isOpen {
+		return model.ErrStoreClosed
+	}
+
 	for _, event := range events {
-		s.mu.Lock()
-		if !s.isOpen {
-			s.mu.Unlock()
-			return model.ErrStoreClosed
+		// Idempotent insert (see CreateEvent): skip events already stored so the
+		// indexes do not accumulate duplicate entries for the same ID.
+		if _, exists := s.events[event.ID]; exists {
+			continue
 		}
 
 		s.events[event.ID] = event
-		s.mu.Unlock()
 
+		// Copy-on-write the per-user index slice (see CreateEvent for rationale).
 		currentUserEvents := s.eventsByUser[event.UserID]
-		currentSessionEvents := s.eventsBySession[event.SessionID]
-
-		mergedUserEvents := append(currentUserEvents, event)
+		mergedUserEvents := make([]*model.Event, 0, len(currentUserEvents)+1)
+		mergedUserEvents = append(mergedUserEvents, currentUserEvents...)
+		mergedUserEvents = append(mergedUserEvents, event)
 		s.eventsByUser[event.UserID] = mergedUserEvents
 
 		if event.SessionID != "" {
-			mergedSession := append(currentSessionEvents, event)
+			currentSessionEvents := s.eventsBySession[event.SessionID]
+			mergedSession := make([]*model.Event, 0, len(currentSessionEvents)+1)
+			mergedSession = append(mergedSession, currentSessionEvents...)
+			mergedSession = append(mergedSession, event)
 			s.eventsBySession[event.SessionID] = mergedSession
 		}
 	}

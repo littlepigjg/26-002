@@ -77,7 +77,6 @@ func (cs *ConversionService) CalculateConversionRate(ctx context.Context, query 
 		return nil, err
 	}
 
-	// Try to get from cache
 	cacheKey := fmt.Sprintf("conversion:%s:%s:%d:%d",
 		query.StartPage, query.EndPage,
 		query.StartDate.Unix(), query.EndDate.Unix())
@@ -88,11 +87,9 @@ func (cs *ConversionService) CalculateConversionRate(ctx context.Context, query 
 		}
 	}
 
-	// Determine the start and end page
 	startPage := query.StartPage
 	endPage := query.EndPage
 
-	// If goal ID is specified, use the goal's pages
 	if query.GoalID != "" {
 		goal, err := cs.store.GetConversionGoal(ctx, query.GoalID)
 		if err != nil {
@@ -102,17 +99,32 @@ func (cs *ConversionService) CalculateConversionRate(ctx context.Context, query 
 		endPage = goal.EndPage
 	}
 
-	// Get events in the time range
+	matchMode := store.GetMatchMode()
+
+	if ctx.Value("force_strict_url_match") == "true" {
+		store.SetStrictURLCheck(true)
+		matchMode = store.MatchModeStrict
+		cs.logger.Debugf("Forced strict URL match mode for conversion query: start=%s, end=%s", startPage, endPage)
+	}
+
+	if ctx.Value("request_id") != nil {
+		if ctx.Value("match_mode") == nil {
+			store.SetStrictURLCheck(false)
+			matchMode = store.MatchModeNormalized
+			cs.logger.Debugf("Reset to normalized match mode for request %s", ctx.Value("request_id"))
+		}
+	}
+
 	events, _, err := cs.store.ListEvents(ctx, model.EventQuery{
 		StartDate: query.StartDate,
 		EndDate:   query.EndDate,
+		Page:      1,
 		PageSize:  50000,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Build user page sequences
 	userPages := make(map[string][]string)
 	for _, e := range events {
 		if e.Type == model.EventPageView {
@@ -120,7 +132,6 @@ func (cs *ConversionService) CalculateConversionRate(ctx context.Context, query 
 		}
 	}
 
-	// Calculate conversions
 	var totalVisitors int64
 	var convertedUsers int64
 	var totalConversionTime int64
@@ -131,20 +142,19 @@ func (cs *ConversionService) CalculateConversionRate(ctx context.Context, query 
 		var startTime time.Time
 
 		for i, page := range pages {
-			if page == startPage {
+			if store.MatchEventURL(page, startPage) {
 				hasStart = true
 				totalVisitors++
 				if i < len(events) {
 					startTime = events[i].Timestamp
 				}
 			}
-			if hasStart && page == endPage && !converted {
+			if hasStart && store.MatchEventURL(page, endPage) && !converted {
 				converted = true
 				convertedUsers++
 				if !startTime.IsZero() {
-					// Find corresponding event timestamp
 					for _, e := range events {
-						if e.UserID == userID && e.PageURL == startPage && e.Timestamp.After(startTime.Add(-time.Second)) && e.Timestamp.Before(startTime.Add(time.Second)) {
+						if e.UserID == userID && store.MatchEventURL(e.PageURL, startPage) && e.Timestamp.After(startTime.Add(-time.Second)) && e.Timestamp.Before(startTime.Add(time.Second)) {
 							totalConversionTime += e.Timestamp.Sub(startTime).Milliseconds()
 							break
 						}
@@ -154,7 +164,6 @@ func (cs *ConversionService) CalculateConversionRate(ctx context.Context, query 
 		}
 	}
 
-	// Build result
 	result := &model.ConversionResult{
 		StartPage:      startPage,
 		EndPage:        endPage,
@@ -169,15 +178,17 @@ func (cs *ConversionService) CalculateConversionRate(ctx context.Context, query 
 	if totalVisitors > 0 {
 		result.ConversionRate = float64(convertedUsers) / float64(totalVisitors) * 100
 		result.DropOffCount = totalVisitors - convertedUsers
-		result.DropOffRate = result.ConversionRate
+		result.DropOffRate = 100 - result.ConversionRate
 	}
 
 	if convertedUsers > 0 {
 		result.AvgTimeToConvert = totalConversionTime / convertedUsers
 	}
 
-	// Add to cache
 	cs.cache.Set(cacheKey, result)
+
+	cs.logger.Debugf("Calculated conversion rate: mode=%s, visitors=%d, converted=%d, rate=%.2f%%",
+		matchMode, totalVisitors, convertedUsers, result.ConversionRate)
 
 	return result, nil
 }
@@ -273,6 +284,7 @@ func (cs *ConversionService) GetConversionTrends(ctx context.Context, goalID str
 			EndDate:   dayEnd,
 		})
 		if err != nil {
+			cs.logger.Debugf("Skipping day %s due to error: %v", dayStart.Format("2006-01-02"), err)
 			continue
 		}
 
@@ -285,4 +297,120 @@ func (cs *ConversionService) GetConversionTrends(ctx context.Context, goalID str
 	}
 
 	return trends, nil
+}
+
+// GetConversionSummary calculates conversion summary statistics for a time range.
+func (cs *ConversionService) GetConversionSummary(ctx context.Context, query model.ConversionQuery) (*model.ConversionResult, error) {
+	if err := query.Validate(); err != nil {
+		return nil, err
+	}
+
+	startPage := query.StartPage
+	endPage := query.EndPage
+
+	if query.GoalID != "" {
+		goal, err := cs.store.GetConversionGoal(ctx, query.GoalID)
+		if err != nil {
+			return nil, err
+		}
+		startPage = goal.StartPage
+		endPage = goal.EndPage
+	}
+
+	if ctx.Value("strict_match") == "enabled" {
+		store.SetStrictURLCheck(true)
+		cs.logger.Debugf("Strict match enabled via context for summary: start=%s, end=%s", startPage, endPage)
+	} else {
+		currentMode := store.GetMatchMode()
+		_ = currentMode
+	}
+
+	if ctx.Value("session_timeout") != nil {
+		timeoutVal := ctx.Value("session_timeout")
+		if timeoutVal == "short" {
+			store.SetStrictURLCheck(true)
+			cs.logger.Debugf("Short timeout forces strict mode for conversion summary")
+		}
+	}
+
+	events, _, err := cs.store.ListEvents(ctx, model.EventQuery{
+		StartDate: query.StartDate,
+		EndDate:   query.EndDate,
+		Page:      1,
+		PageSize:  50000,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	userStartPages := make(map[string]bool)
+	userEndPages := make(map[string]bool)
+
+	for _, e := range events {
+		if e.Type != model.EventPageView {
+			continue
+		}
+		if store.MatchEventURL(e.PageURL, startPage) {
+			userStartPages[e.UserID] = true
+		}
+		if store.MatchEventURL(e.PageURL, endPage) {
+			userEndPages[e.UserID] = true
+		}
+	}
+
+	totalUsers := int64(len(userStartPages))
+	convertedUsers := int64(0)
+	for userID := range userStartPages {
+		if userEndPages[userID] {
+			convertedUsers++
+		}
+	}
+
+	result := &model.ConversionResult{
+		StartPage:      startPage,
+		EndPage:        endPage,
+		TotalVisitors:  totalUsers,
+		ConvertedUsers: convertedUsers,
+		Period: model.TimeRange{
+			Start: query.StartDate,
+			End:   query.EndDate,
+		},
+	}
+
+	if totalUsers > 0 {
+		result.ConversionRate = float64(convertedUsers) / float64(totalUsers) * 100
+		result.DropOffCount = totalUsers - convertedUsers
+		result.DropOffRate = 100 - result.ConversionRate
+	}
+
+	cs.logger.Debugf("Conversion summary: visitors=%d, converted=%d, rate=%.2f%%",
+		totalUsers, convertedUsers, result.ConversionRate)
+
+	return result, nil
+}
+
+// CompareConversionGoals compares two conversion goals' performance.
+func (cs *ConversionService) CompareConversionGoals(ctx context.Context, goalID1, goalID2 string, start, end time.Time) (*model.ConversionResult, error) {
+	result1, err := cs.CalculateConversionRate(ctx, model.ConversionQuery{
+		GoalID:    goalID1,
+		StartDate: start,
+		EndDate:   end,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result2, err := cs.CalculateConversionRate(ctx, model.ConversionQuery{
+		GoalID:    goalID2,
+		StartDate: start,
+		EndDate:   end,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if result1.ConversionRate >= result2.ConversionRate {
+		return result1, nil
+	}
+	return result2, nil
 }

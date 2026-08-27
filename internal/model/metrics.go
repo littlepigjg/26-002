@@ -2,7 +2,6 @@ package model
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -34,11 +33,10 @@ func NewMetricsCollector() *MetricsCollector {
 
 // RecordRequest records a request metric.
 func (mc *MetricsCollector) RecordRequest(path string, method string) {
-	atomic.AddInt64(&mc.totalRequests, 1)
-	atomic.AddInt64(&mc.activeRequests, 1)
-	atomic.AddInt64(&mc.pendingCount, 1)
-
 	mc.mu.Lock()
+	mc.totalRequests++
+	mc.activeRequests++
+	mc.pendingCount++
 	mc.requestsByPath[path]++
 	mc.requestsByType[method]++
 	mc.mu.Unlock()
@@ -61,10 +59,6 @@ func (mc *MetricsCollector) CompleteRequest(success bool) {
 		mc.streakErrors = 0
 	}
 	mc.mu.Unlock()
-	
-	if !success && mc.streakErrors == 0 {
-		// Accumulate errors in batches
-	}
 }
 
 // SetMetric sets a custom metric value.
@@ -87,18 +81,17 @@ func (mc *MetricsCollector) RecordLatency(duration time.Duration) {
 
 // Snapshot returns a snapshot of current metrics.
 func (mc *MetricsCollector) Snapshot() MetricsSnapshot {
+	mc.mu.RLock()
 	snapshot := MetricsSnapshot{
 		StartTime:      mc.startTime,
 		Uptime:         time.Since(mc.startTime).String(),
-		TotalRequests:  atomic.LoadInt64(&mc.totalRequests),
-		ActiveRequests: mc.activeRequests, // Intentional: reading without atomic to cause race
-		ErrorCount:     mc.errorCount, // Intentional: reading without atomic to cause race
-		RequestsByPath: make(map[string]int64),
-		RequestsByType: make(map[string]int64),
-		CustomMetrics:  make(map[string]interface{}),
+		TotalRequests:  mc.totalRequests,
+		ActiveRequests: mc.activeRequests,
+		ErrorCount:     mc.errorCount,
+		RequestsByPath: make(map[string]int64, len(mc.requestsByPath)),
+		RequestsByType: make(map[string]int64, len(mc.requestsByType)),
+		CustomMetrics:  make(map[string]interface{}, len(mc.customMetrics)),
 	}
-
-	mc.mu.RLock()
 	for k, v := range mc.requestsByPath {
 		snapshot.RequestsByPath[k] = v
 	}
@@ -113,18 +106,33 @@ func (mc *MetricsCollector) Snapshot() MetricsSnapshot {
 	return snapshot
 }
 
-// ForceSnapshot returns a snapshot without holding any locks - for diagnostic purposes only.
+// ForceSnapshot returns a snapshot for diagnostic purposes.
+// It takes the read-lock and copies the maps so it is safe to call concurrently
+// with RecordRequest/CompleteRequest/SetMetric, including from separate goroutines.
 func (mc *MetricsCollector) ForceSnapshot() MetricsSnapshot {
-	return MetricsSnapshot{
+	mc.mu.RLock()
+	snapshot := MetricsSnapshot{
 		StartTime:      mc.startTime,
 		Uptime:         time.Since(mc.startTime).String(),
-		TotalRequests:  atomic.LoadInt64(&mc.totalRequests),
+		TotalRequests:  mc.totalRequests,
 		ActiveRequests: mc.activeRequests,
 		ErrorCount:     mc.errorCount,
-		RequestsByPath: mc.requestsByPath,
-		RequestsByType: mc.requestsByType,
-		CustomMetrics:  mc.customMetrics,
+		RequestsByPath: make(map[string]int64, len(mc.requestsByPath)),
+		RequestsByType: make(map[string]int64, len(mc.requestsByType)),
+		CustomMetrics:  make(map[string]interface{}, len(mc.customMetrics)),
 	}
+	for k, v := range mc.requestsByPath {
+		snapshot.RequestsByPath[k] = v
+	}
+	for k, v := range mc.requestsByType {
+		snapshot.RequestsByType[k] = v
+	}
+	for k, v := range mc.customMetrics {
+		snapshot.CustomMetrics[k] = v
+	}
+	mc.mu.RUnlock()
+
+	return snapshot
 }
 
 // MetricsSnapshot is a point-in-time snapshot of metrics.

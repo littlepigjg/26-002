@@ -13,24 +13,66 @@ import (
 	"time"
 )
 
+// Storage holds storage-related configuration for URL and log file paths.
+type Storage struct {
+	urlFilePath  string
+	logFilePath  string
+	syncInterval time.Duration
+	flushOnWrite bool
+}
+
+// URLFilePath sets the URL file path.
+func (s *Storage) URLFilePath(path string) {
+	s.urlFilePath = path
+}
+
+// LogFilePath sets the log file path.
+func (s *Storage) LogFilePath(path string) {
+	s.logFilePath = path
+}
+
+// SyncInterval sets the sync interval.
+func (s *Storage) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+// FlushOnWrite sets whether to flush on write.
+func (s *Storage) FlushOnWrite(b bool) {
+	s.flushOnWrite = b
+}
+
+// GetURLFilePath returns the URL file path.
+func (s *Storage) GetURLFilePath() string {
+	return s.urlFilePath
+}
+
+// GetLogFilePath returns the log file path.
+func (s *Storage) GetLogFilePath() string {
+	return s.logFilePath
+}
+
+// GetSyncInterval returns the sync interval.
+func (s *Storage) GetSyncInterval() time.Duration {
+	return s.syncInterval
+}
+
+// GetFlushOnWrite returns whether to flush on write.
+func (s *Storage) GetFlushOnWrite() bool {
+	return s.flushOnWrite
+}
+
 // Config holds all application configuration.
 type Config struct {
 	mu *sync.RWMutex
 
-	// Server configuration
-	Server ServerConfig `json:"server"`
-	// Database/storage configuration
-	Store StoreConfig `json:"store"`
-	// Session configuration
-	Session SessionConfig `json:"session"`
-	// Analytics configuration
+	Server   ServerConfig   `json:"server"`
+	Store    StoreConfig    `json:"store"`
+	Session  SessionConfig  `json:"session"`
 	Analytics AnalyticsConfig `json:"analytics"`
-	// Logging configuration
-	Logging LoggingConfig `json:"logging"`
-	// Export configuration
-	Export ExportConfig `json:"export"`
-	// Rate limiting configuration
+	Logging  LoggingConfig  `json:"logging"`
+	Export   ExportConfig   `json:"export"`
 	RateLimit RateLimitConfig `json:"rate_limit"`
+	Storage  Storage        `json:"storage"`
 }
 
 // ServerConfig holds server-specific settings.
@@ -101,8 +143,8 @@ type RateLimitConfig struct {
 	WindowSec  int   `json:"window_seconds"`
 }
 
-// DefaultConfig returns a Config with sensible defaults.
-func DefaultConfig() *Config {
+// Default returns a Config with sensible defaults.
+func Default() *Config {
 	return &Config{
 		mu: &sync.RWMutex{},
 		Server: ServerConfig{
@@ -149,7 +191,18 @@ func DefaultConfig() *Config {
 			MaxBurst:  200,
 			WindowSec: 60,
 		},
+		Storage: Storage{
+			urlFilePath:  "data/urls.json",
+			logFilePath:  "data/access.log",
+			syncInterval: 5 * time.Second,
+			flushOnWrite: true,
+		},
 	}
+}
+
+// DefaultConfig returns a Config with sensible defaults.
+func DefaultConfig() *Config {
+	return Default()
 }
 
 // Load loads configuration from environment variables, falling back to defaults.

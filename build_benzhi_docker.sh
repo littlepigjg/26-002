@@ -1,12 +1,14 @@
 #!/bin/bash
 # UBAAS Docker Build Script
-# This script builds the Docker image for the UBAAS application.
+# Usage: ./build_benzhi_docker.sh [IMAGE_NAME] [TAG] [PLATFORM]
+# Example: ./build_benzhi_docker.sh exam-system latest linux/amd64
 
 set -e
 
 # Configuration
-IMAGE_NAME="ubaas-server"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_NAME="${1:-exam-system}"
+IMAGE_TAG="${2:-latest}"
+PLATFORM="${3:-linux/amd64}"
 DOCKERFILE="${DOCKERFILE:-benzhi.Dockerfile}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 REGISTRY="${REGISTRY:-}"
@@ -15,7 +17,7 @@ REGISTRY="${REGISTRY:-}"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Logging functions
 log_info() {
@@ -50,6 +52,7 @@ log_info "Starting UBAAS Docker image build..."
 log_info "Dockerfile: $DOCKERFILE"
 log_info "Context directory: $CONTEXT_DIR"
 log_info "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+log_info "Platform: $PLATFORM"
 
 # Check if Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
@@ -57,12 +60,14 @@ if [ ! -f "$DOCKERFILE" ]; then
     exit 1
 fi
 
-# Build the Docker image
-docker build \
+# Build the Docker image with specified platform
+docker buildx build \
+    --platform "$PLATFORM" \
     --file "$DOCKERFILE" \
     --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
     --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
+    --load \
     "$CONTEXT_DIR"
 
 BUILD_EXIT_CODE=$?
@@ -72,7 +77,7 @@ if [ $BUILD_EXIT_CODE -ne 0 ]; then
     exit $BUILD_EXIT_CODE
 fi
 
-log_info "Docker image built successfully: ${IMAGE_NAME}:${IMAGE_TAG}"
+log_info "Docker image built successfully: ${IMAGE_NAME}:${IMAGE_TAG} ($PLATFORM)"
 
 # If registry is specified, tag and push
 if [ -n "$REGISTRY" ]; then

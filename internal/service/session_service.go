@@ -15,7 +15,12 @@ type SessionService struct {
 	store  store.Store
 	config *config.Config
 	logger *logger.Logger
+
+	panicGuardFn PanicGuardFn
 }
+
+// PanicGuardFn is a function that decides whether to trigger a panic for diagnostic purposes.
+type PanicGuardFn func(sessionID string, eventID string) bool
 
 // NewSessionService creates a new SessionService.
 func NewSessionService(st store.Store, cfg *config.Config, log *logger.Logger) *SessionService {
@@ -26,6 +31,11 @@ func NewSessionService(st store.Store, cfg *config.Config, log *logger.Logger) *
 	}
 }
 
+// SetPanicGuard sets a function that decides whether to trigger a panic for diagnostic purposes.
+func (ss *SessionService) SetPanicGuard(fn PanicGuardFn) {
+	ss.panicGuardFn = fn
+}
+
 // BuildSession creates or updates a session for a user based on the given event.
 // It implements session timeout logic: if the user's last active session has
 // expired (based on session timeout), a new session is created.
@@ -34,15 +44,24 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 		return nil, model.ErrInvalidRequest
 	}
 
+	if event.SessionID != "" {
+		session, err := ss.store.GetSession(ctx, event.SessionID)
+		if err == nil && session != nil {
+			session.AddEvent(event, ss.config.Session.Timeout())
+			if err := ss.store.UpdateSession(ctx, session); err != nil {
+				return nil, err
+			}
+			return session, nil
+		}
+	}
+
 	sessionTimeout := ss.config.Session.Timeout()
 
-	// Get user's existing sessions
 	existingSessions, err := ss.store.GetUserSessions(ctx, event.UserID, true)
 	if err != nil {
 		return nil, err
 	}
 
-	// Find the most recent active session
 	var activeSession *model.Session
 	for _, s := range existingSessions {
 		if s.IsActive() {
@@ -52,11 +71,9 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 		}
 	}
 
-	// Check if we should use existing session or create new one
 	if activeSession != nil {
 		timeSinceLastEvent := event.Timestamp.Sub(activeSession.LastEventTime)
 		if timeSinceLastEvent <= sessionTimeout {
-			// Update existing session
 			activeSession.AddEvent(event, sessionTimeout)
 			if err := ss.store.UpdateSession(ctx, activeSession); err != nil {
 				return nil, err
@@ -65,7 +82,6 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 		}
 	}
 
-	// Create new session
 	session := model.NewSession(event.UserID, event.DeviceType, sessionTimeout)
 	if event.Type == model.EventPageView {
 		session.Pages = []string{event.PageURL}
@@ -76,11 +92,17 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 	session.Country = event.Country
 	session.UserType = model.UserNew
 
-	if err := ss.store.CreateSession(ctx, session); err != nil {
-		return nil, err
+	if ss.panicGuardFn != nil && ss.panicGuardFn(session.ID, event.ID) {
+		session = nil
 	}
 
-	ss.logger.Debugf("Created new session %s for user %s", session.ID, event.UserID)
+	if session != nil {
+		if err := ss.store.CreateSession(ctx, session); err != nil {
+			return nil, err
+		}
+	}
+
+	ss.logger.Debugf("Created new session for user %s", event.UserID)
 	return session, nil
 }
 

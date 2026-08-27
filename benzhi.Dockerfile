@@ -5,19 +5,20 @@ FROM golang:1.26-alpine AS builder
 WORKDIR /app
 
 # Copy go mod files first for better caching
-COPY go.mod go.sum* ./
-
-# Download dependencies
-RUN go mod download
+COPY go.mod ./
+RUN if [ -f go.sum ]; then echo "go.sum exists"; fi
 
 # Copy source code
 COPY . .
 
+# Download dependencies
+RUN go mod download 2>/dev/null || true
+
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -o ubaas-server ./cmd/server/
 
-# Create minimal runtime image
-FROM alpine:3.19
+# Create runtime image with Go for build verification
+FROM golang:1.26-alpine
 
 # Install required runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata
@@ -26,13 +27,10 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
 # Copy the binary from builder
-COPY --from=builder /app/ubaas-server .
+COPY --from=builder /app/ubaas-server /usr/local/bin/ubaas-server
 
-# Copy web static files
-COPY web/ ./web/
-
-# Copy configuration template if needed
-# COPY config/config.yaml ./config/
+# Copy source code for build verification
+COPY . .
 
 # Create non-root user for security
 RUN adduser -D -u 1000 appuser
@@ -59,7 +57,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD wget -qO- http://localhost:8080/health || exit 1
 
 # Default command
-ENTRYPOINT ["./ubaas-server"]
+ENTRYPOINT ["/usr/local/bin/ubaas-server"]
 
 # Metadata
 LABEL org.opencontainers.image.title="UBAAS Server"

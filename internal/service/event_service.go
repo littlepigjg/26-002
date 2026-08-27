@@ -21,7 +21,8 @@ type EventService struct {
 	config *config.Config
 	logger *logger.Logger
 
-	// Buffer for batch processing
+	sessionService *SessionService
+
 	bufferMu sync.Mutex
 	buffer   []*model.Event
 	ticker   *time.Ticker
@@ -40,6 +41,11 @@ func NewEventService(st store.Store, cfg *config.Config, log *logger.Logger) *Ev
 	}
 	es.startBatchProcessor()
 	return es
+}
+
+// SetSessionService sets the session service for building sessions alongside events.
+func (es *EventService) SetSessionService(ss *SessionService) {
+	es.sessionService = ss
 }
 
 // startBatchProcessor starts a background goroutine that periodically flushes buffered events.
@@ -93,13 +99,20 @@ func (es *EventService) CreateEvent(ctx context.Context, req *model.EventCreateR
 
 	event := req.ToEvent()
 
-	// For single events, store directly to ensure immediate availability
 	if err := es.store.CreateEvent(ctx, event); err != nil {
 		es.logger.Errorf("Failed to create event: %v", err)
 		return nil, err
 	}
 
-	// Also add to batch buffer for batch processing
+	if es.sessionService != nil {
+		session, err := es.sessionService.BuildSession(ctx, event)
+		if err != nil {
+			es.logger.Warnf("Failed to build session for event %s: %v", event.ID, err)
+		} else if session != nil {
+			es.logger.Debugf("Built session %s for event %s", session.ID, event.ID)
+		}
+	}
+
 	es.bufferMu.Lock()
 	es.buffer = append(es.buffer, event)
 	shouldFlush := len(es.buffer) >= 100

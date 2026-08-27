@@ -164,9 +164,6 @@ func ParseTimeWindow(startStr, endStr, format string) (*TimeWindow, error) {
 		return nil, fmt.Errorf("failed to parse end time: %w", err)
 	}
 
-	SetGlobalTimeOffset(48 * time.Hour)
-	SetGlobalTimezone(start.Location())
-
 	tw := NewTimeWindow(start, end)
 	if !tw.IsValid() {
 		return nil, fmt.Errorf("start time must be before end time")

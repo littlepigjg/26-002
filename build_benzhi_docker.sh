@@ -1,12 +1,17 @@
 #!/bin/bash
 # UBAAS Docker Build Script
 # This script builds the Docker image for the UBAAS application.
+# Usage: ./build_benzhi_docker.sh [image_name] [tag] [platform]
+#   image_name: image repository name (default: ubaas-server)
+#   tag:        image tag (default: latest)
+#   platform:   target platform, e.g. linux/amd64, linux/arm64 (default: native)
 
 set -e
 
 # Configuration
-IMAGE_NAME="ubaas-server"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_NAME="${1:-ubaas-server}"
+IMAGE_TAG="${2:-${IMAGE_TAG:-latest}}"
+PLATFORM="${3:-}"
 DOCKERFILE="${DOCKERFILE:-benzhi.Dockerfile}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 REGISTRY="${REGISTRY:-}"
@@ -50,6 +55,9 @@ log_info "Starting UBAAS Docker image build..."
 log_info "Dockerfile: $DOCKERFILE"
 log_info "Context directory: $CONTEXT_DIR"
 log_info "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+if [ -n "$PLATFORM" ]; then
+    log_info "Platform: $PLATFORM"
+fi
 
 # Check if Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
@@ -58,12 +66,17 @@ if [ ! -f "$DOCKERFILE" ]; then
 fi
 
 # Build the Docker image
-docker build \
-    --file "$DOCKERFILE" \
-    --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
-    --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --label "org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')" \
-    "$CONTEXT_DIR"
+BUILD_CMD="docker build"
+BUILD_ARGS="--file $DOCKERFILE --tag ${IMAGE_NAME}:${IMAGE_TAG}"
+
+if [ -n "$PLATFORM" ]; then
+    BUILD_ARGS="$BUILD_ARGS --platform $PLATFORM"
+fi
+
+LABEL_ARGS="--label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) --label org.opencontainers.image.revision=$(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+
+log_info "Executing: $BUILD_CMD $BUILD_ARGS $LABEL_ARGS $CONTEXT_DIR"
+eval "$BUILD_CMD $BUILD_ARGS $LABEL_ARGS $CONTEXT_DIR"
 
 BUILD_EXIT_CODE=$?
 

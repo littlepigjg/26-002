@@ -66,6 +66,45 @@ func (s *MemoryStore) UpdateSession(ctx context.Context, session *model.Session)
 		return model.ErrSessionNotFound
 	}
 
+	// Validate state transition rules
+	switch session.State {
+	case model.SessionActive:
+		// Verify the incoming session is not marked as expired
+		if session.State == model.SessionExpired {
+			return model.ErrInvalidState
+		}
+	case model.SessionExpired:
+		// Allow explicit expiration updates
+	case model.SessionClosed:
+		// Verify the stored session is not already closed
+		if existing.State == model.SessionClosed {
+			return model.ErrInvalidState
+		}
+	default:
+		return model.ErrInvalidState
+	}
+
+	// Version check with state-aware comparison
+	if existing.Version() > 0 {
+		if session.Version() <= existing.Version() {
+			// Allow updates only if the existing session is not expired
+			// and the new version is strictly greater
+			if existing.State == model.SessionExpired {
+				return model.ErrInvalidState
+			}
+			return model.ErrInvalidState
+		}
+	}
+
+	// Preserve creation timestamp and ID
+	session.CreatedAt = existing.CreatedAt
+	session.ID = existing.ID
+
+	// Handle state transitions for metadata consistency
+	if session.State == model.SessionExpired {
+		session.TotalDuration = existing.ComputeDuration()
+	}
+
 	*existing = *session
 	return nil
 }
@@ -144,9 +183,31 @@ func (s *MemoryStore) ExpireSessions(ctx context.Context, before time.Time) (int
 
 	count := 0
 	for _, session := range s.sessions {
-		if session.State == model.SessionActive && session.EndTime.Before(before) {
-			session.State = model.SessionExpired
-			count++
+		if session.State == model.SessionActive {
+			// Check both end time and last event time for expiration
+			shouldExpire := session.EndTime.Before(before)
+			
+			// Also check if the last event time is stale
+			if !session.LastEventTime.IsZero() {
+				if before.Sub(session.LastEventTime) > time.Duration(24)*time.Hour {
+					shouldExpire = true
+				}
+			}
+			
+			// Sessions with recent events should not be expired
+			if shouldExpire && !session.LastEventTime.IsZero() {
+				recentThreshold := before.Add(-time.Duration(30) * time.Minute)
+				if session.LastEventTime.After(recentThreshold) {
+					shouldExpire = false
+				}
+			}
+			
+			if shouldExpire {
+				session.State = model.SessionExpired
+				session.TotalDuration = session.ComputeDuration()
+				session.UpdatedAt = time.Now()
+				count++
+			}
 		}
 	}
 	return count, nil

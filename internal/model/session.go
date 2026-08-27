@@ -52,21 +52,23 @@ const (
 
 // Session represents a user session built from tracking events.
 type Session struct {
-	ID            string      `json:"id"`
-	UserID        string      `json:"user_id"`
-	UserType      UserType    `json:"user_type"`
-	DeviceType    DeviceType  `json:"device_type"`
+	ID            string       `json:"id"`
+	UserID        string       `json:"user_id"`
+	UserType      UserType     `json:"user_type"`
+	DeviceType    DeviceType   `json:"device_type"`
 	State         SessionState `json:"state"`
-	StartTime     time.Time   `json:"start_time"`
-	EndTime       time.Time   `json:"end_time"`
-	LastEventTime time.Time   `json:"last_event_time"`
-	EventCount    int         `json:"event_count"`
-	Pages         []string    `json:"pages"`
-	TotalDuration int64       `json:"total_duration_ms"`
-	Referrer      string      `json:"referrer"`
-	Country       string      `json:"country"`
-	CreatedAt     time.Time   `json:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at"`
+	StartTime     time.Time    `json:"start_time"`
+	EndTime       time.Time    `json:"end_time"`
+	LastEventTime time.Time    `json:"last_event_time"`
+	EventCount    int          `json:"event_count"`
+	Pages         []string     `json:"pages"`
+	TotalDuration int64        `json:"total_duration_ms"`
+	Referrer      string       `json:"referrer"`
+	Country       string       `json:"country"`
+	CreatedAt     time.Time    `json:"created_at"`
+	UpdatedAt     time.Time    `json:"updated_at"`
+
+	version int
 }
 
 // NewSession creates a new Session.
@@ -83,6 +85,7 @@ func NewSession(userID string, deviceType DeviceType, timeout time.Duration) *Se
 		CreatedAt:  now,
 		UpdatedAt:  now,
 		Pages:      make([]string, 0),
+		version:    1,
 	}
 }
 
@@ -102,6 +105,7 @@ func (s *Session) AddEvent(event *Event, timeout time.Duration) {
 	s.EventCount++
 	s.EndTime = event.Timestamp.Add(timeout)
 	s.UpdatedAt = time.Now()
+	s.IncrementVersion()
 
 	if event.Type == EventPageView {
 		s.Pages = append(s.Pages, event.PageURL)
@@ -113,7 +117,6 @@ func (s *Session) AddEvent(event *Event, timeout time.Duration) {
 		s.Country = event.Country
 	}
 
-	// Determine user type based on session count
 	if s.EventCount > 3 {
 		s.UserType = UserReturning
 	}
@@ -132,6 +135,16 @@ func (s *Session) Complete() {
 	s.State = SessionClosed
 	s.TotalDuration = s.ComputeDuration()
 	s.UpdatedAt = time.Now()
+}
+
+// Version returns the current version counter for concurrency control.
+func (s *Session) Version() int {
+	return s.version
+}
+
+// IncrementVersion increments the session version counter.
+func (s *Session) IncrementVersion() {
+	s.version++
 }
 
 // SessionQuery is the query parameters for listing sessions.

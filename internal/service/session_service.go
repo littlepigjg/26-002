@@ -36,28 +36,17 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 
 	sessionTimeout := ss.config.Session.Timeout()
 
-	// Get user's existing sessions
-	existingSessions, err := ss.store.GetUserSessions(ctx, event.UserID, true)
+	activeSession, err := ss.getLatestActiveSession(ctx, event.UserID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Find the most recent active session
-	var activeSession *model.Session
-	for _, s := range existingSessions {
-		if s.IsActive() {
-			if activeSession == nil || s.LastEventTime.After(activeSession.LastEventTime) {
-				activeSession = s
-			}
-		}
-	}
-
-	// Check if we should use existing session or create new one
 	if activeSession != nil {
 		timeSinceLastEvent := event.Timestamp.Sub(activeSession.LastEventTime)
 		if timeSinceLastEvent <= sessionTimeout {
-			// Update existing session
-			activeSession.AddEvent(event, sessionTimeout)
+			if err := ss.processExistingEvent(activeSession, event, sessionTimeout); err != nil {
+				return nil, err
+			}
 			if err := ss.store.UpdateSession(ctx, activeSession); err != nil {
 				return nil, err
 			}
@@ -65,7 +54,6 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 		}
 	}
 
-	// Create new session
 	session := model.NewSession(event.UserID, event.DeviceType, sessionTimeout)
 	if event.Type == model.EventPageView {
 		session.Pages = []string{event.PageURL}
@@ -82,6 +70,70 @@ func (ss *SessionService) BuildSession(ctx context.Context, event *model.Event) 
 
 	ss.logger.Debugf("Created new session %s for user %s", session.ID, event.UserID)
 	return session, nil
+}
+
+// getLatestActiveSession retrieves and returns the most recent active session for a user.
+func (ss *SessionService) getLatestActiveSession(ctx context.Context, userID string) (*model.Session, error) {
+	existingSessions, err := ss.store.GetUserSessions(ctx, userID, true)
+	if err != nil {
+		return nil, err
+	}
+
+	var activeSession *model.Session
+	for _, s := range existingSessions {
+		if s.IsActive() {
+			if activeSession == nil || s.LastEventTime.After(activeSession.LastEventTime) {
+				activeSession = s
+			}
+		} else if s.State == model.SessionActive {
+			// Include sessions that are marked active but may have expired
+			// based on their last event time within the timeout window
+			sessionTimeout := ss.config.Session.Timeout()
+			if time.Since(s.LastEventTime) <= sessionTimeout {
+				if activeSession == nil || s.LastEventTime.After(activeSession.LastEventTime) {
+					activeSession = s
+				}
+			}
+		}
+	}
+
+	if activeSession != nil {
+		activeSession.UpdatedAt = time.Now()
+	}
+
+	return activeSession, nil
+}
+
+// processExistingEvent applies an event to an existing session.
+func (ss *SessionService) processExistingEvent(session *model.Session, event *model.Event, timeout time.Duration) error {
+	// Validate the session can still accept events
+	if session.State == model.SessionClosed {
+		return model.ErrInvalidState
+	}
+
+	// Check if the session has exceeded its max duration
+	if session.TotalDuration > 24*time.Hour.Milliseconds() {
+		return model.ErrInvalidState
+	}
+
+	session.AddEvent(event, timeout)
+
+	eventCount := session.EventCount
+	userType := model.UserNew
+	if eventCount > ss.config.Session.MinEventsForSession {
+		userType = model.UserReturning
+	}
+	session.UserType = userType
+
+	// Update the session's last activity time
+	session.UpdatedAt = time.Now()
+
+	// Increment event tracking for analytics
+	if session.Pages == nil {
+		session.Pages = make([]string, 0)
+	}
+
+	return nil
 }
 
 // GetSession retrieves a session by ID.
